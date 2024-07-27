@@ -19,6 +19,7 @@ DISTROS=(
 
 # Path to the pown.sh script
 SCRIPT_PATH=$(realpath pown.sh)
+LDAP_ADMIN_PASSWORD="your_admin_password" # Replace with your actual LDAP admin password
 
 # Function to run the script in a Docker container
 function run_test() {
@@ -26,19 +27,19 @@ function run_test() {
     echo "Testing on $distro..."
     case "$distro" in
         *debian*|*ubuntu*)
-            docker run --rm -v "$SCRIPT_PATH":/pown.sh -h ldap --privileged "$distro" /bin/bash -c "
+            docker run --rm -e LDAP_ADMIN_PASSWORD="$LDAP_ADMIN_PASSWORD" -v "$SCRIPT_PATH":/pown.sh -h ldap --privileged "$distro" /bin/bash -c "
                 chmod +x /pown.sh && /pown.sh"
             ;;
         *rockylinux*)
-            docker run --rm -v "$SCRIPT_PATH":/pown.sh -h ldap --privileged "$distro" /bin/bash -c "
+            docker run --rm -e LDAP_ADMIN_PASSWORD="$LDAP_ADMIN_PASSWORD" -v "$SCRIPT_PATH":/pown.sh -h ldap --privileged "$distro" /bin/bash -c "
                 chmod +x /pown.sh && /pown.sh"
             ;;
         *balenalib/raspberrypi3-debian*)
-            docker run --rm --platform linux/arm/v7 -v "$SCRIPT_PATH":/pown.sh -h ldap --privileged "$distro" /bin/bash -c "
+            docker run --rm --platform linux/arm/v7 -e LDAP_ADMIN_PASSWORD="$LDAP_ADMIN_PASSWORD" -v "$SCRIPT_PATH":/pown.sh -h ldap --privileged "$distro" /bin/bash -c "
                 chmod +x /pown.sh && /pown.sh"
             ;;
         *archlinux*)
-            docker run --rm -v "$SCRIPT_PATH":/pown.sh -h ldap --privileged "$distro" /bin/bash -c "
+            docker run --rm -e LDAP_ADMIN_PASSWORD="$LDAP_ADMIN_PASSWORD" -v "$SCRIPT_PATH":/pown.sh -h ldap --privileged "$distro" /bin/bash -c "
                 chmod +x /pown.sh && /pown.sh"
             ;;
         *)

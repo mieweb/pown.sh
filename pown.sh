@@ -58,9 +58,12 @@ function configure_ldap_apt() {
     LDAP_URI="ldap://ldap"
     BIND_DN="cn=admin,$BASE_DN"
 
-    # Prompt for LDAP admin password
-    read -s -p "Enter LDAP admin password: " BIND_PASSWORD
-    echo
+    # Use LDAP admin password from environment variable
+    if [ -z "$LDAP_ADMIN_PASSWORD" ]; then
+        echo "LDAP_ADMIN_PASSWORD environment variable is not set. Exiting..."
+        exit 1
+    fi
+    BIND_PASSWORD=$LDAP_ADMIN_PASSWORD
 
     echo "Setting up debconf selections for LDAP..."
     cat <<EOF | debconf-set-selections
@@ -92,9 +95,12 @@ function configure_ldap_yum() {
     BASE_DN=$(get_base_dn)
     LDAP_URI="ldap://ldap"
 
-    # Prompt for LDAP admin password
-    read -s -p "Enter LDAP admin password: " BIND_PASSWORD
-    echo
+    # Use LDAP admin password from environment variable
+    if [ -z "$LDAP_ADMIN_PASSWORD" ]; then
+        echo "LDAP_ADMIN_PASSWORD environment variable is not set. Exiting..."
+        exit 1
+    fi
+    BIND_PASSWORD=$LDAP_ADMIN_PASSWORD
 
     echo "Creating /etc/nslcd.conf..."
     echo "URI $LDAP_URI
@@ -113,9 +119,12 @@ function configure_ldap_pacman() {
     LDAP_URI="ldap://ldap"
     BIND_DN="cn=admin,$BASE_DN"
 
-    # Prompt for LDAP admin password
-    read -s -p "Enter LDAP admin password: " BIND_PASSWORD
-    echo
+    # Use LDAP admin password from environment variable
+    if [ -z "$LDAP_ADMIN_PASSWORD" ]; then
+        echo "LDAP_ADMIN_PASSWORD environment variable is not set. Exiting..."
+        exit 1
+    fi
+    BIND_PASSWORD=$LDAP_ADMIN_PASSWORD
 
     echo "Creating /etc/nslcd.conf..."
     echo "uri $LDAP_URI
