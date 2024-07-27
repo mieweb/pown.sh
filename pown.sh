@@ -3,6 +3,8 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
+echo "Starting LDAP SSO configuration..."
+
 # Function to determine BASE_DN based on the domain
 function get_base_dn() {
     domain=$(hostname -d)
@@ -31,22 +33,24 @@ function detect_package_manager() {
 # Install necessary packages based on the package manager
 function install_packages() {
     PACKAGE_MANAGER=$(detect_package_manager)
+    echo "Detected package manager: $PACKAGE_MANAGER"
 
     if [ "$PACKAGE_MANAGER" == "apt" ]; then
-        echo "Detected APT package manager. Installing necessary packages..."
+        echo "Installing necessary packages using apt..."
         apt-get update
         DEBIAN_FRONTEND=noninteractive apt-get install -y libnss-ldap libpam-ldap ldap-utils nscd
     elif [ "$PACKAGE_MANAGER" == "yum" ]; then
-        echo "Detected YUM package manager. Installing necessary packages..."
+        echo "Installing necessary packages using yum..."
         yum install -y nss-pam-ldapd nscd openldap-clients
     elif [ "$PACKAGE_MANAGER" == "pacman" ]; then
-        echo "Detected Pacman package manager. Installing necessary packages..."
+        echo "Installing necessary packages using pacman..."
         pacman -Sy --noconfirm nss-pam-ldapd openldap nscd
     fi
 }
 
 # Configure LDAP settings for APT-based systems
 function configure_ldap_apt() {
+    echo "Configuring LDAP settings for APT-based system..."
     BASE_DN=$(get_base_dn)
     LDAP_URI="ldap://ldap"
     BIND_DN="cn=admin,$BASE_DN"
@@ -55,8 +59,7 @@ function configure_ldap_apt() {
     read -s -p "Enter LDAP admin password: " BIND_PASSWORD
     echo
 
-    echo "Configuring LDAP settings for APT-based system..."
-
+    echo "Setting up debconf selections for LDAP..."
     cat <<EOF | debconf-set-selections
 libnss-ldap libnss-ldap/binddn string $BIND_DN
 libnss-ldap libnss-ldap/bindpw password $BIND_PASSWORD
@@ -82,6 +85,7 @@ EOF
 
 # Configure LDAP settings for YUM-based systems
 function configure_ldap_yum() {
+    echo "Configuring LDAP settings for YUM-based system..."
     BASE_DN=$(get_base_dn)
     LDAP_URI="ldap://ldap"
 
@@ -89,6 +93,7 @@ function configure_ldap_yum() {
     read -s -p "Enter LDAP admin password: " BIND_PASSWORD
     echo
 
+    echo "Creating /etc/nslcd.conf..."
     echo "URI $LDAP_URI
 BASE $BASE_DN
 BINDDN cn=admin,$BASE_DN
@@ -100,6 +105,7 @@ BINDPW $BIND_PASSWORD
 
 # Configure LDAP settings for Pacman-based systems
 function configure_ldap_pacman() {
+    echo "Configuring LDAP settings for Pacman-based system..."
     BASE_DN=$(get_base_dn)
     LDAP_URI="ldap://ldap"
     BIND_DN="cn=admin,$BASE_DN"
@@ -108,8 +114,7 @@ function configure_ldap_pacman() {
     read -s -p "Enter LDAP admin password: " BIND_PASSWORD
     echo
 
-    echo "Configuring LDAP settings for Pacman-based system..."
-
+    echo "Creating /etc/nslcd.conf..."
     echo "uri $LDAP_URI
 base $BASE_DN
 binddn $BIND_DN
@@ -144,6 +149,7 @@ function restart_services() {
 }
 
 # Main script execution
+echo "Installing packages..."
 install_packages
 
 if [ "$(detect_package_manager)" == "apt" ]; then
