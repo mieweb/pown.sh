@@ -3,6 +3,9 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
+# Trap errors and display a message
+trap 'echo "An error occurred during the execution of the script. Exiting..."; exit 1' ERR
+
 echo "Starting LDAP SSO configuration..."
 
 # Function to determine BASE_DN based on the domain
