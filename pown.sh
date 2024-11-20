@@ -41,7 +41,7 @@ function install_packages() {
     if [ "$PACKAGE_MANAGER" == "apt" ]; then
         echo "Installing necessary packages using apt..."
         apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y libnss-ldap libpam-ldap ldap-utils nscd
+        DEBIAN_FRONTEND=noninteractive apt-get install -y libnss-ldapd libpam-ldap ldap-utils nscd
     elif [ "$PACKAGE_MANAGER" == "yum" ]; then
         echo "Installing necessary packages using yum..."
         yum install -y nss-pam-ldapd nscd openldap-clients
@@ -67,13 +67,13 @@ function configure_ldap_apt() {
 
     echo "Setting up debconf selections for LDAP..."
     cat <<EOF | debconf-set-selections
-libnss-ldap libnss-ldap/binddn string $BIND_DN
-libnss-ldap libnss-ldap/bindpw password $BIND_PASSWORD
-libnss-ldap libnss-ldap/rootbinddn string $BIND_DN
-libnss-ldap libnss-ldap/dbrootlogin boolean true
-libnss-ldap libnss-ldap/override boolean true
-libnss-ldap libnss-ldap/ldap_version select 3
-libnss-ldap libnss-ldap/dblogin boolean false
+libnss-ldapd libnss-ldapd/binddn string $BIND_DN
+libnss-ldapd libnss-ldapd/bindpw password $BIND_PASSWORD
+libnss-ldapd libnss-ldapd/rootbinddn string $BIND_DN
+libnss-ldapd libnss-ldapd/dbrootlogin boolean true
+libnss-ldapd libnss-ldapd/override boolean true
+libnss-ldapd libnss-ldapd/ldap_version select 3
+libnss-ldapd libnss-ldapd/dblogin boolean false
 libpam-ldap libpam-ldap/binddn string $BIND_DN
 libpam-ldap libpam-ldap/bindpw password $BIND_PASSWORD
 libpam-ldap libpam-ldap/base string $BASE_DN
@@ -85,7 +85,7 @@ libpam-ldap libpam-ldap/override boolean true
 libpam-ldap libpam-ldap/dblogin boolean false
 EOF
 
-    dpkg-reconfigure -f noninteractive libnss-ldap
+    dpkg-reconfigure -f noninteractive libnss-ldapd
     dpkg-reconfigure -f noninteractive libpam-ldap
 }
 
