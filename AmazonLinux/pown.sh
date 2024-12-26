@@ -10,8 +10,6 @@ detect_package_manager() {
         echo "apt"
     elif command -v yum >/dev/null 2>&1; then
         echo "yum"
-    elif command -v dnf >/dev/null 2>&1; then
-        echo "dnf"
     elif command -v pacman >/dev/null 2>&1; then
         echo "pacman"
     else
@@ -32,9 +30,9 @@ export LDAP_DOMAIN="mieweb.com"
 export LDAP_ORG="MIE"
 export LDAP_ADMIN_DN="cn=admin,dc=mieweb,dc=com"
 export LDAP_ADMIN_PW="secret"
-export SSH_PORT=2222
 export LDAP_CERT_SUBJ="/C=US/ST=IN/L=City/O=MIE/CN=localhost"
 export LDAP_URI="ldap://8.tcp.ngrok.io:19611"
+export CA_CERT="/etc/ssl/certs/ca-cert.pem"
 echo "Environment variables set."
 
 # Common configurations
@@ -55,7 +53,6 @@ setup_ssh() {
 Port 22
 PermitRootLogin yes
 UsePAM yes
-PasswordAuthentication yes
 EOL
     echo "SSH config written."
 
@@ -107,15 +104,15 @@ access_provider = ldap
 id_provider = ldap
 auth_provider = ldap
 chpass_provider = ldap
-ldap_uri = ldap://8.tcp.ngrok.io:19611
-ldap_search_base = dc=mieweb,dc=com
-ldap_default_bind_dn = cn=admin,dc=mieweb,dc=com
-ldap_default_authtok = secret
+ldap_uri = $LDAP_URI
+ldap_search_base = $LDAP_BASE
+ldap_default_bind_dn = $LDAP_ADMIN_DN
+ldap_default_authtok = $LDAP_ADMIN_PW
 ldap_tls_reqcert = never
 cache_credentials = true
 enumerate = true
 ldap_id_use_start_tls = false
-ldap_tls_cacert = /etc/ssl/certs/ca-cert.pem
+ldap_tls_cacert = $CA_CERT
 
 ldap_user_object_class = posixAccount
 ldap_group_object_class = posixGroup
@@ -233,24 +230,6 @@ install_packages_yum() {
     echo "Packages installed."
 }
 
-install_packages_dnf() {
-    echo "Installing packages with dnf..."
-    dnf install -y \
-        openssh-clients \
-        openssh-server \
-        sssd \
-        sssd-ldap \
-        sudo \
-        nss-pam-ldapd \
-        openldap-clients \
-        ca-certificates \
-        vim \
-        net-tools \
-        iputils
-    echo "Packages installed."
-}
-
-
 install_packages_pacman() {
     echo "Installing packages with pacman..."
     pacman -Sy --noconfirm \
@@ -275,8 +254,6 @@ elif [ "$PACKAGE_MANAGER" = "yum" ]; then
     install_packages_yum
 elif [ "$PACKAGE_MANAGER" = "pacman" ]; then
     install_packages_pacman
-elif [ "$PACKAGE_MANAGER" = "dnf" ]; then
-    install_packages_dnf
 else
     echo $PACKAGE_MANAGER
     echo "No valid package manager found. Exiting."
