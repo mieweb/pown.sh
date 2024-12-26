@@ -35,18 +35,6 @@ echo "Starting script..."
 PACKAGE_MANAGER=$(detect_package_manager)
 echo "Detected package manager: $PACKAGE_MANAGER"
 
-# Environment variables
-echo "Setting environment variables..."
-export LDAP_BASE="dc=mieweb,dc=com"
-export LDAP_DOMAIN="mieweb.com"
-export LDAP_ORG="MIE"
-export LDAP_ADMIN_DN="cn=admin,dc=mieweb,dc=com"
-export LDAP_ADMIN_PW="secret"
-export LDAP_CERT_SUBJ="/C=US/ST=IN/L=City/O=MIE/CN=localhost"
-export LDAP_URI="ldap://8.tcp.ngrok.io:19611"
-export CA_CERT="/etc/ssl/certs/ca-cert.pem"
-echo "Environment variables set."
-
 # Common configurations
 setup_ssh() {
     echo "Setting up SSH..."
