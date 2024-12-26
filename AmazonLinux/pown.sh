@@ -181,6 +181,22 @@ EOL
     echo "CA certificates updated."
 }
 
+configure_pam_mkhomedir() {
+    echo "Configuring PAM for SSHD to enable pam_mkhomedir..."
+    
+    PAM_FILE="/etc/pam.d/sshd"
+
+    # Check if the pam_mkhomedir.so line already exists
+    if ! grep -q "pam_mkhomedir.so" "$PAM_FILE"; then
+        # Add the pam_mkhomedir.so configuration to the PAM file
+        echo "Adding pam_mkhomedir.so configuration to $PAM_FILE..."
+        echo "session required pam_mkhomedir.so skel=/etc/skel umask=0077" >> "$PAM_FILE"
+    else
+        echo "pam_mkhomedir.so is already configured in $PAM_FILE. Skipping."
+    fi
+}
+
+
 install_packages_apt() {
     echo "Installing packages with apt..."
     apt-get update && apt-get install -y \
@@ -272,5 +288,6 @@ setup_ssh
 setup_ldap_client
 setup_sssd
 setup_tls
+configure_pam_mkhomedir
 
 echo "Setup completed successfully."
