@@ -18,7 +18,6 @@ echo "Environment variables loaded."
 
 # Function to detect package manager
 detect_package_manager() {
-    # echo "Detecting package manager..."
     if command -v apt-get >/dev/null 2>&1; then
         echo "apt"
     elif command -v yum >/dev/null 2>&1; then
@@ -141,7 +140,7 @@ ldap_auth_disable_tls_never_use_in_production = true
 ldap_group_name = cn
 EOL
     chmod 600 /etc/sssd/sssd.conf
-      # Add Red Hat specific authentication configuration
+    # Add Red Hat specific authentication configuration
     authselect select sssd --force
     authselect enable-feature with-mkhomedir
 
@@ -153,29 +152,15 @@ EOL
 
 setup_tls() {
     echo "Setting up TLS..."
-    cat > /etc/ssl/certs/ca-cert.pem <<EOL
------BEGIN CERTIFICATE-----
-MIIDdzCCAl+gAwIBAgIUU3nQZQO3admOWHDJieY4pttUg18wDQYJKoZIhvcNAQEL
-BQAwSzELMAkGA1UEBhMCVVMxCzAJBgNVBAgMAklOMQ0wCwYDVQQHDARDaXR5MQww
-CgYDVQQKDANNSUUxEjAQBgNVBAMMCWxvY2FsaG9zdDAeFw0yNDEyMTMxNzI1Mjda
-Fw0yNTEyMTMxNzI1MjdaMEsxCzAJBgNVBAYTAlVTMQswCQYDVQQIDAJJTjENMAsG
-A1UEBwwEQ2l0eTEMMAoGA1UECgwDTUlFMRIwEAYDVQQDDAlsb2NhbGhvc3QwggEi
-MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCJ3zO0lYgLxB3szVyuG040HULW
-b7GvSBQSywIQPaOIG0BuvXDAG65JEGGcXJ030cH5BrVDmFPLBlyicKWkI4RLUvh1
-4ehOsDK0cyCq9BVSqyWEAsGeXhWzqD2fCjL3lEQTxKYMQyqVM3YKhZJvVKh3Ueuj
-c0mwd/dm/Vjg8S98S3ggcDu8SIU7OjRvPXrJRSS9tdbh57s0MEo54lk2XsoP1HOy
-R7TpaP5ehK3FNR4NLs4HbnkdXq0z0aR/KGBFAmelEJ/4O5IcRQphKUeyBkE++hJV
-UWtljLrHBNETU+qw+0FQ9+kIGtdZEiZlQvAM+5w5b55AB0X1aw1StKLr8bLLAgMB
-AAGjUzBRMB0GA1UdDgQWBBTpvplsCYIQC5Q2ZXaATld5xUGkGDAfBgNVHSMEGDAW
-gBTpvplsCYIQC5Q2ZXaATld5xUGkGDAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3
-DQEBCwUAA4IBAQAY7aiyo9vORylL1DiH3NtJg9EuQFXXxmc1ge2IwMQRqnQPkKCC
-Po+76BB/Kd57a8Bw4GaeGFuYqn696SpaJTS5WjPOfCyIbxPhxBDMMT7SArjHzwpU
-22oKAxBMD6QjqzBmkw1IqrQndkn6Mee6cy+3uDNZ1+1za1ATFsqE0VgqbWYBzNJM
-2Hpv8dXgNDA1qqfguHQOOgMGP8ZgJr0twAiiSldu02wavEeeski8zyDGjajUOfQf
-aTqQ66+qTwptRDJkT0aVHAPC0kjREVF3ATxWPVOitOFfDuQzBcP5FCOXkuhr/jM6
-QrZlGFvioZ0gXjJvJ57k5f6fNfVK91VKfORh
------END CERTIFICATE-----
-EOL
+
+     if [ -z "$CA_CERT_CONTENT" ]; then
+        echo "Error: CA_CERT_CONTENT environment variable is not set"
+        exit 1
+    fi
+
+    # Write the certificate directly
+    echo "$CA_CERT_CONTENT" > /etc/ssl/certs/ca-cert.pem
+
     chmod 644 /etc/ssl/certs/ca-cert.pem
     echo "TLS certificate written."
 
