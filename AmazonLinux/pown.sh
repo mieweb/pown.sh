@@ -3,6 +3,19 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
+# Load environment variables from .env file
+if [ -f .env ]; then
+    echo "Loading environment variables from .env file..."
+    set -o allexport
+    source .env
+    set +o allexport
+else
+    echo ".env file not found. Exiting."
+    exit 1
+fi
+
+echo "Environment variables loaded."
+
 # Function to detect package manager
 detect_package_manager() {
     # echo "Detecting package manager..."
