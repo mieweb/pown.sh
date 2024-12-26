@@ -1,0 +1,30 @@
+# Terraform-related files
+*.tfstate
+*.tfstate.backup
+*.lock.hcl
+.terraform/
+terraform.tfvars
+
+
+# Shell script outputs
+*.log
+*.bak
+
+# Temporary files
+*.swp
+*.swo
+*.tmp
+.DS_Store
+
+# System-specific files
+Thumbs.db
+desktop.ini
+
+# IDE-specific files
+.vscode/
+.idea/
+*.iml
+
+# Secrets or sensitive files (if applicable, add specific filenames)
+secrets.env
+.env
