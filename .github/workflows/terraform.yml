@@ -20,30 +20,44 @@ jobs:
         with:
           terraform_version: 1.5.5
 
-      - name: Validate Terraform
+      - name: Validate Terraform Configuration
+        working-directory: ./tests
         run: terraform validate
 
-      - name: Format Terraform
+      - name: Format Terraform Files
+        working-directory: ./tests
         run: terraform fmt -check
 
       - name: Initialize Terraform
+        working-directory: ./tests
         env:
           TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
           TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
           TF_VAR_private_key: ${{ secrets.PRIVATE_KEY }}
         run: terraform init
 
-      - name: Plan Terraform
+      - name: Terraform Plan
+        working-directory: ./tests
         env:
           TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
           TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
           TF_VAR_private_key: ${{ secrets.PRIVATE_KEY }}
         run: terraform plan
 
-      - name: Apply Terraform
+      - name: Terraform Apply
         if: github.ref == 'refs/heads/main'
+        working-directory: ./tests
         env:
           TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
           TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
           TF_VAR_private_key: ${{ secrets.PRIVATE_KEY }}
         run: terraform apply -auto-approve
+
+      - name: Cleanup Resources (Optional)
+        if: github.event_name == 'pull_request' && github.event.action == 'closed'
+        working-directory: ./tests
+        env:
+          TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+          TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+          TF_VAR_private_key: ${{ secrets.PRIVATE_KEY }}
+        run: terraform destroy -auto-approve
