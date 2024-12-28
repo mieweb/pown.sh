@@ -1,0 +1,52 @@
+name: Terraform CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set Up Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.5
+
+      - name: Terraform Init
+        working-directory: ./tests
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: ./tests
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: ./tests
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: ./tests
+        run: terraform apply -auto-approve tfplan
+
+      - name: Test Outputs
+        working-directory: ./tests
+        run: |
+          debian_ip=$(terraform output -raw debian_public_ip)
+          amazon_ip=$(terraform output -raw amazon_linux_public_ip)
+          if [ -z "$debian_ip" ] || [ -z "$amazon_ip" ]; then
+            echo "Test failed: Public IP outputs are empty"
+            exit 1
+          else
+            echo "Test passed: Debian IP ($debian_ip), Amazon Linux IP ($amazon_ip)"
+          fi
+
+      - name: Terraform Destroy
+        working-directory: ./tests
+        run: terraform destroy -auto-approve
