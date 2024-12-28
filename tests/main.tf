@@ -1,3 +1,13 @@
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 4.0"
+    }
+  }
+  required_version = ">= 1.3.0"
+}
+
 # Input Variables
 variable "access_key" {
   description = "AWS access key"
