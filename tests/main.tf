@@ -9,6 +9,12 @@ variable "secret_key" {
   type        = string
 }
 
+variable "private_key" {
+  description = "SSH private key"
+  type        = string
+  sensitive   = true
+}
+
 # Provider Configuration
 provider "aws" {
   region     = "us-east-1"
@@ -45,7 +51,7 @@ resource "aws_instance" "debian" {
   connection {
     type        = "ssh"
     user        = "admin"
-    private_key = file("~/.ssh/test.pem")
+    private_key = var.private_key
     host        = self.public_ip
   }
 
@@ -60,33 +66,32 @@ resource "aws_instance" "debian" {
     on_failure  = "continue"  # Add this to see if file transfer fails
   }
 
-provisioner "remote-exec" {
-  inline = [
-    "pwd",
-    "echo 'Step 1: Checking original .env'",
-    "ls -la /home/admin/.env",
-    "echo 'Step 2: Setting permissions'",
-    "sudo chmod 600 /home/admin/.env",
-    "echo 'Step 3: Copying to root'",
-    "sudo cp /home/admin/.env /root/.env",
-    "echo 'Step 4: Verifying root .env'",
-    "sudo ls -la /root/.env",
-    "echo 'Step 5: Checking if file exists'",
-    "sudo test -f /root/.env && echo 'File exists' || echo 'File does not exist'",
-    "echo 'Step 6: Checking file contents'",
-    "sudo cat /root/.env | wc -l",
-    "if sudo test -s /root/.env; then",
-    "  echo '.env file exists and has content'",
-    "sudo cp /home/admin/pown.sh /root/pown.sh || echo 'Failed to copy pown.sh'",
-    "sudo chmod +x /root/pown.sh || echo 'Failed to make pown.sh executable'",
-    "  sudo bash /home/admin/pown.sh",
-    "else",
-    "  echo '.env file is empty or missing'",
-    "  exit 1",
-    "fi"
-  ]
-}
-
+  provisioner "remote-exec" {
+    inline = [
+      "pwd",
+      "echo 'Step 1: Checking original .env'",
+      "ls -la /home/admin/.env",
+      "echo 'Step 2: Setting permissions'",
+      "sudo chmod 600 /home/admin/.env",
+      "echo 'Step 3: Copying to root'",
+      "sudo cp /home/admin/.env /root/.env",
+      "echo 'Step 4: Verifying root .env'",
+      "sudo ls -la /root/.env",
+      "echo 'Step 5: Checking if file exists'",
+      "sudo test -f /root/.env && echo 'File exists' || echo 'File does not exist'",
+      "echo 'Step 6: Checking file contents'",
+      "sudo cat /root/.env | wc -l",
+      "if sudo test -s /root/.env; then",
+      "  echo '.env file exists and has content'",
+      "  sudo cp /home/admin/pown.sh /root/pown.sh || echo 'Failed to copy pown.sh'",
+      "  sudo chmod +x /root/pown.sh || echo 'Failed to make pown.sh executable'",
+      "  sudo bash /home/admin/pown.sh",
+      "else",
+      "  echo '.env file is empty or missing'",
+      "  exit 1",
+      "fi"
+    ]
+  }
 
   tags = {
     Name = "DebianInstance"
@@ -103,7 +108,7 @@ resource "aws_instance" "amazon_linux" {
   connection {
     type        = "ssh"
     user        = "ec2-user"
-    private_key = file("~/.ssh/test.pem")
+    private_key = var.private_key
     host        = self.public_ip
   }
 
@@ -117,30 +122,30 @@ resource "aws_instance" "amazon_linux" {
     destination = "/home/ec2-user/.env"
   }
 
-provisioner "remote-exec" {
-  inline = [
-    "pwd",
-    "echo 'Step 1: Checking original .env'",
-    "ls -la /home/ec2-user/.env",
-    "echo 'Step 2: Setting permissions'",
-    "sudo chmod 600 /home/ec2-user/.env",
-    "echo 'Step 3: Copying to root'",
-    "sudo cp /home/ec2-user/.env /root/.env",
-    "echo 'Step 4: Verifying root .env'",
-    "sudo ls -la /root/.env",
-    "echo 'Step 5: Checking if file exists'",
-    "sudo test -f /root/.env && echo 'File exists' || echo 'File does not exist'",
-    "echo 'Step 6: Checking file contents'",
-    "sudo cat /root/.env | wc -l",
-    "if sudo test -s /root/.env; then",
-    "  echo '.env file exists and has content'",
-    "  sudo bash /home/ec2-user/pown.sh",
-    "else",
-    "  echo '.env file is empty or missing'",
-    "  exit 1",
-    "fi"
-  ]
-}
+  provisioner "remote-exec" {
+    inline = [
+      "pwd",
+      "echo 'Step 1: Checking original .env'",
+      "ls -la /home/ec2-user/.env",
+      "echo 'Step 2: Setting permissions'",
+      "sudo chmod 600 /home/ec2-user/.env",
+      "echo 'Step 3: Copying to root'",
+      "sudo cp /home/ec2-user/.env /root/.env",
+      "echo 'Step 4: Verifying root .env'",
+      "sudo ls -la /root/.env",
+      "echo 'Step 5: Checking if file exists'",
+      "sudo test -f /root/.env && echo 'File exists' || echo 'File does not exist'",
+      "echo 'Step 6: Checking file contents'",
+      "sudo cat /root/.env | wc -l",
+      "if sudo test -s /root/.env; then",
+      "  echo '.env file exists and has content'",
+      "  sudo bash /home/ec2-user/pown.sh",
+      "else",
+      "  echo '.env file is empty or missing'",
+      "  exit 1",
+      "fi"
+    ]
+  }
 
   tags = {
     Name = "AmazonLinuxInstance"

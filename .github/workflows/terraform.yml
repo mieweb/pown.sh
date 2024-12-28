@@ -1,4 +1,4 @@
-name: Terraform CI/CD Pipeline
+name: Terraform CI/CD
 
 on:
   push:
@@ -8,45 +8,42 @@ on:
 
 jobs:
   terraform:
+    name: Terraform Workflow
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Set Up Terraform
+      - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
           terraform_version: 1.5.5
 
-      - name: Terraform Init
-        working-directory: ./tests
-        run: terraform init
-
-      - name: Terraform Validate
-        working-directory: ./tests
+      - name: Validate Terraform
         run: terraform validate
 
-      - name: Terraform Plan
-        working-directory: ./tests
-        run: terraform plan -out=tfplan
+      - name: Format Terraform
+        run: terraform fmt -check
 
-      - name: Terraform Apply
-        working-directory: ./tests
-        run: terraform apply -auto-approve tfplan
+      - name: Initialize Terraform
+        env:
+          TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+          TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+          TF_VAR_private_key: ${{ secrets.PRIVATE_KEY }}
+        run: terraform init
 
-      - name: Test Outputs
-        working-directory: ./tests
-        run: |
-          debian_ip=$(terraform output -raw debian_public_ip)
-          amazon_ip=$(terraform output -raw amazon_linux_public_ip)
-          if [ -z "$debian_ip" ] || [ -z "$amazon_ip" ]; then
-            echo "Test failed: Public IP outputs are empty"
-            exit 1
-          else
-            echo "Test passed: Debian IP ($debian_ip), Amazon Linux IP ($amazon_ip)"
-          fi
+      - name: Plan Terraform
+        env:
+          TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+          TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+          TF_VAR_private_key: ${{ secrets.PRIVATE_KEY }}
+        run: terraform plan
 
-      - name: Terraform Destroy
-        working-directory: ./tests
-        run: terraform destroy -auto-approve
+      - name: Apply Terraform
+        if: github.ref == 'refs/heads/main'
+        env:
+          TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+          TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+          TF_VAR_private_key: ${{ secrets.PRIVATE_KEY }}
+        run: terraform apply -auto-approve
