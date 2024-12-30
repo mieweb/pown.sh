@@ -1,0 +1,69 @@
+name: Terraform Workflow with Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  terraform:
+    name: Terraform Setup, Validate, Plan, and Apply
+    runs-on: ubuntu-latest
+    environment: dev
+
+    env:
+      TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+      TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+      TF_VAR_private_key: ${{ secrets.AWS_PRIVATE_KEY }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.3.0"
+
+      - name: Initialize Terraform
+        working-directory: ./tests
+        run: terraform init
+
+      - name: Validate Terraform
+        working-directory: ./tests
+        run: terraform validate
+
+      - name: Plan Terraform
+        working-directory: ./tests
+        run: terraform plan
+
+      - name: Apply Terraform
+        if: github.ref == 'refs/heads/main'
+        working-directory: ./tests
+        run: terraform apply -auto-approve
+
+  tests:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: terraform
+    environment: dev
+
+    env:
+      TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+      TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+      TF_VAR_private_key: ${{ secrets.AWS_PRIVATE_KEY }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform (for Tests)
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.3.0"
+
+      - name: Run Tests
+        run: |
+          chmod +x ./tests/test.sh
+          ./tests/test.sh
