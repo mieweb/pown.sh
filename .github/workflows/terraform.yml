@@ -1,4 +1,4 @@
-name: Terraform Tests
+name: Terraform Multi-Job Workflow
 
 on:
   push:
@@ -7,7 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  terraform:
+  terraform-setup:
+    name: Terraform Setup Job
     runs-on: ubuntu-latest
     environment: dev
 
@@ -17,39 +18,49 @@ jobs:
       TF_VAR_private_key: ${{ secrets.AWS_PRIVATE_KEY }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.3.0"
 
-      - name: Create .env file
-        run: |
-          cat > tests/.env << EOF
-          LDAP_BASE=${{ vars.LDAP_BASE }}
-          LDAP_ADMIN_DN=${{ vars.LDAP_ADMIN_DN }}
-          LDAP_ADMIN_PW=${{ vars.LDAP_ADMIN_PW }}
-          LDAP_URI=${{ vars.LDAP_URI }}
-          CA_CERT=${{ vars.CA_CERT }}
-          CA_CERT_CONTENT=${{ secrets.CA_CERT_CONTENT }}
-          EOF
-
       - name: Initialize Terraform
-        working-directory: ./tests
         run: terraform init
 
       - name: Plan Terraform
-        working-directory: ./tests
         run: terraform plan
 
+  terraform-apply:
+    name: Terraform Apply Job
+    runs-on: ubuntu-latest
+    needs: terraform-setup # Depends on terraform-setup job
+    environment: dev
+
+    env:
+      TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+      TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+      TF_VAR_private_key: ${{ secrets.AWS_PRIVATE_KEY }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
       - name: Apply Terraform
-        if: github.ref == 'refs/heads/main'
-        working-directory: ./tests
         run: terraform apply -auto-approve
 
+  run-tests:
+    name: Test Job
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+    environment: dev
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
       - name: Run Tests
-        working-directory: ./tests
         run: |
-          chmod +x ./test.sh
-          ./test.sh
+          chmod +x ./tests/test.sh
+          ./tests/test.sh
