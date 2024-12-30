@@ -6,14 +6,15 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
-  TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
-  TF_VAR_private_key: ${{ secrets.AWS_PRIVATE_KEY }}
-
 jobs:
   terraform:
     runs-on: ubuntu-latest
+    environment: dev
+
+    env:
+      TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+      TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+      TF_VAR_private_key: ${{ secrets.AWS_PRIVATE_KEY }}
 
     steps:
       - uses: actions/checkout@v4
