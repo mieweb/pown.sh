@@ -32,8 +32,28 @@ resource "aws_security_group" "allow_ssh" {
   }
 }
 
+# Fetch the latest Debian AMI
+data "aws_ami" "debian" {
+  most_recent = true
+  owners      = ["136693071363"] # Owner ID for Debian
+  filter {
+    name   = "name"
+    values = ["debian-12-amd64-*"]
+  }
+}
+
+# Fetch the latest Amazon Linux AMI
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["137112412989"] # Owner ID for Amazon Linux
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-x86_64"]
+  }
+}
+
 resource "aws_instance" "debian" {
-  ami             = "ami-064519b8c76274859"
+  ami             = data.aws_ami.debian.id
   instance_type   = "t2.micro"
   security_groups = [aws_security_group.allow_ssh.name]
   key_name        = "test"
@@ -62,7 +82,7 @@ resource "aws_instance" "debian" {
 }
 
 resource "aws_instance" "amazon_linux" {
-  ami             = "ami-01816d07b1128cd2d"
+  ami             = data.aws_ami.amazon_linux.id
   instance_type   = "t2.micro"
   security_groups = [aws_security_group.allow_ssh.name]
   key_name        = "test"
