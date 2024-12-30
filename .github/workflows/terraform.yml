@@ -35,6 +35,19 @@ jobs:
           CA_CERT_CONTENT=${{ secrets.CA_CERT_CONTENT }}
           EOF
 
+      - name: Initialize Terraform
+        working-directory: ./tests
+        run: terraform init
+
+      - name: Plan Terraform
+        working-directory: ./tests
+        run: terraform plan
+
+      - name: Apply Terraform
+        if: github.ref == 'refs/heads/main'
+        working-directory: ./tests
+        run: terraform apply -auto-approve
+
       - name: Run Tests
         working-directory: ./tests
         run: |
