@@ -8,7 +8,7 @@ on:
 
 jobs:
   terraform-setup:
-    name: Terraform Setup Job
+    name: Terraform Setup
     runs-on: ubuntu-latest
     environment: dev
 
@@ -27,15 +27,21 @@ jobs:
           terraform_version: "1.3.0"
 
       - name: Initialize Terraform
+        working-directory: ./tests
         run: terraform init
 
       - name: Plan Terraform
+        working-directory: ./tests
+        run: terraform plan
+
+      - name: Terraform Plan
+        working-directory: ./tests
         run: terraform plan
 
   terraform-apply:
-    name: Terraform Apply Job
+    name: Terraform Apply
     runs-on: ubuntu-latest
-    needs: terraform-setup # Depends on terraform-setup job
+    needs: terraform-setup
     environment: dev
 
     env:
@@ -51,7 +57,7 @@ jobs:
         run: terraform apply -auto-approve
 
   run-tests:
-    name: Test Job
+    name: Test
     runs-on: ubuntu-latest
     needs: terraform-apply
     environment: dev
