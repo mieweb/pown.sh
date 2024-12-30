@@ -1,4 +1,4 @@
-name: Terraform Multi-Job Workflow
+name: Terraform Workflow with Tests
 
 on:
   push:
@@ -7,8 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  terraform-setup:
-    name: Terraform Setup
+  terraform:
+    name: Terraform Setup, Validate, Plan, and Apply
     runs-on: ubuntu-latest
     environment: dev
 
@@ -26,6 +26,10 @@ jobs:
         with:
           terraform_version: "1.3.0"
 
+      - name: Validate Terraform
+        working-directory: ./tests
+        run: terraform validate
+
       - name: Initialize Terraform
         working-directory: ./tests
         run: terraform init
@@ -34,32 +38,15 @@ jobs:
         working-directory: ./tests
         run: terraform plan
 
-      - name: Terraform Plan
-        working-directory: ./tests
-        run: terraform plan
-
-  terraform-apply:
-    name: Terraform Apply
-    runs-on: ubuntu-latest
-    needs: terraform-setup
-    environment: dev
-
-    env:
-      TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
-      TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
-      TF_VAR_private_key: ${{ secrets.AWS_PRIVATE_KEY }}
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
       - name: Apply Terraform
+        if: github.ref == 'refs/heads/main'
+        working-directory: ./tests
         run: terraform apply -auto-approve
 
-  run-tests:
-    name: Test
+  tests:
+    name: Run Tests
     runs-on: ubuntu-latest
-    needs: terraform-apply
+    needs: terraform
     environment: dev
 
     steps:
