@@ -26,13 +26,13 @@ jobs:
         with:
           terraform_version: "1.3.0"
 
-      - name: Validate Terraform
-        working-directory: ./tests
-        run: terraform validate
-
       - name: Initialize Terraform
         working-directory: ./tests
         run: terraform init
+
+      - name: Validate Terraform
+        working-directory: ./tests
+        run: terraform validate
 
       - name: Plan Terraform
         working-directory: ./tests
