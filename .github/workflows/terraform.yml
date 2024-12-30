@@ -1,54 +1,41 @@
-name: Terraform CI/CD
+name: Terraform Tests
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
+    branches: [main]
+
+env:
+  TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+  TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+  TF_VAR_private_key: ${{ secrets.AWS_PRIVATE_KEY }}
 
 jobs:
   terraform:
-    name: Terraform Workflow
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
+        uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.5.5
+          terraform_version: "1.3.0"
 
-      - name: Initialize Terraform
-        working-directory: ./tests
-        env:
-          TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
-          TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
-          TF_VAR_private_key: ${{ secrets.PRIVATE_KEY }}
-        run: terraform init
+      - name: Create .env file
+        run: |
+          cat > tests/.env << EOF
+          LDAP_BASE=${{ vars.LDAP_BASE }}
+          LDAP_ADMIN_DN=${{ vars.LDAP_ADMIN_DN }}
+          LDAP_ADMIN_PW=${{ vars.LDAP_ADMIN_PW }}
+          LDAP_URI=${{ vars.LDAP_URI }}
+          CA_CERT=${{ vars.CA_CERT }}
+          CA_CERT_CONTENT=${{ secrets.CA_CERT_CONTENT }}
+          EOF
 
-      - name: Validate Terraform
+      - name: Run Tests
         working-directory: ./tests
-        run: terraform validate
-
-      - name: Format Terraform
-        working-directory: ./tests
-        run: terraform fmt -check
-
-      - name: Plan Terraform
-        working-directory: ./tests
-        env:
-          TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
-          TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
-          TF_VAR_private_key: ${{ secrets.PRIVATE_KEY }}
-        run: terraform plan
-
-      - name: Apply Terraform
-        if: github.ref == 'refs/heads/main'
-        working-directory: ./tests
-        env:
-          TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
-          TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
-          TF_VAR_private_key: ${{ secrets.PRIVATE_KEY }}
-        run: terraform apply -auto-approve
+        run: |
+          chmod +x ./test.sh
+          ./test.sh

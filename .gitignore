@@ -4,6 +4,7 @@
 *.lock.hcl
 .terraform/
 terraform.tfvars
+tfplan
 
 
 # Shell script outputs
@@ -28,3 +29,5 @@ desktop.ini
 # Secrets or sensitive files (if applicable, add specific filenames)
 secrets.env
 .env
+.env.vars
+.secrets
