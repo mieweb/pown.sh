@@ -49,9 +49,19 @@ jobs:
     needs: terraform
     environment: dev
 
+    env:
+      TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+      TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+      TF_VAR_private_key: ${{ secrets.AWS_PRIVATE_KEY }}
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Setup Terraform (for Tests)
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.3.0"
 
       - name: Run Tests
         run: |
