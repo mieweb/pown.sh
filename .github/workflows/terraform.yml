@@ -1,6 +1,12 @@
 name: "OS Matrix Test"
 
 on:
+  # Trigger on pull request to main
+  pull_request:
+    branches:
+      - main
+
+  # Trigger manually
   workflow_dispatch:
     inputs:
       os_version:
@@ -8,13 +14,10 @@ on:
         required: false
         default: ""
 
-  pull_request:
-    branches:
-      - main
-
 jobs:
   test:
     runs-on: ubuntu-latest
+    environment: dev # Specify the dev environment
     strategy:
       matrix:
         os: ["debian", "amazon-linux"]
@@ -35,11 +38,11 @@ jobs:
         id: fetch_ami
         run: |
           case "${{ matrix.os }}" in
-            debian-latest)
+            debian)
               os_filter="debian-12-amd64-*"
               owners="136693071363" # Debian owner ID
               ;;
-            amazon-linux-latest)
+            amazon-linux)
               os_filter="amzn2-ami-hvm-*-x86_64-gp2"
               owners="137112412989" # Amazon Linux owner ID
               ;;
@@ -47,7 +50,8 @@ jobs:
           ami_id=$(aws ec2 describe-images --filters "Name=name,Values=$os_filter" "Name=state,Values=available" \
                   --owners $owners \
                   --query "Images | sort_by(@, &CreationDate)[-1].ImageId" --output text)
-          echo "AMI_ID=$ami_id" >> $GITHUB_ENV
+          echo "AMI_ID=$ami_id"
+          echo "ami_id=$ami_id" >> $GITHUB_ENV  # Store in the runtime environment
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
@@ -58,13 +62,18 @@ jobs:
         run: terraform init
 
       - name: Apply Terraform
-        run: terraform apply -auto-approve -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" -var="ami_id=${{ env.AMI_ID }}"
+        run: |
+          terraform apply -auto-approve \
+            -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" \
+            -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" \
+            -var="ami_id=${{ env.ami_id }}"  # Use directly from the runtime
 
       - name: Fetch Instance IP
         id: instance_info
         run: |
           INSTANCE_IP=$(terraform output -raw instance_ip)
-          echo "INSTANCE_IP=$INSTANCE_IP" >> $GITHUB_ENV
+          echo "INSTANCE_IP=$INSTANCE_IP"
+          echo "instance_ip=$INSTANCE_IP" >> $GITHUB_ENV  # Save the instance IP in the runtime environment
 
       - name: Add SSH Key
         run: |
@@ -73,7 +82,7 @@ jobs:
 
       - name: Install pown.sh via SSH
         run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ec2-user@${{ env.INSTANCE_IP }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ec2-user@${{ env.instance_ip }} << 'EOF'
           curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/main/pown.sh
           chmod +x pown.sh
           ./pown.sh
@@ -81,4 +90,8 @@ jobs:
 
       - name: Destroy Terraform
         if: always()
-        run: terraform destroy -auto-approve -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" -var="ami_id=${{ env.AMI_ID }}"
+        run: |
+          terraform destroy -auto-approve \
+            -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" \
+            -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" \
+            -var="ami_id=${{ env.ami_id }}"
