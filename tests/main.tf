@@ -8,6 +8,11 @@ variable "secret_key" {
   type        = string
 }
 
+variable "ami_id" {
+  description = "AMI ID to use for the instance"
+  type        = string
+}
+
 provider "aws" {
   region     = "us-east-1"
   access_key = var.access_key
