@@ -1,12 +1,8 @@
 name: "OS Matrix Test"
-
 on:
-  # Trigger on pull request to main
   pull_request:
     branches:
       - main
-
-  # Trigger manually
   workflow_dispatch:
     inputs:
       os_version:
@@ -17,7 +13,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    environment: dev # Specify the dev environment
+    environment: dev
     strategy:
       matrix:
         os: ["debian", "amazon-linux"]
@@ -47,11 +43,20 @@ jobs:
               owners="137112412989" # Amazon Linux owner ID
               ;;
           esac
-          ami_id=$(aws ec2 describe-images --filters "Name=name,Values=$os_filter" "Name=state,Values=available" \
-                  --owners $owners \
-                  --query "Images | sort_by(@, &CreationDate)[-1].ImageId" --output text)
+
+          ami_id=$(aws ec2 describe-images \
+            --filters "Name=name,Values=$os_filter" "Name=state,Values=available" \
+            --owners $owners \
+            --query "Images | sort_by(@, &CreationDate)[-1].ImageId" \
+            --output text)
+
+          if [ -z "$ami_id" ]; then
+            echo "Failed to find valid AMI ID"
+            exit 1
+          fi
+
           echo "AMI_ID=$ami_id"
-          echo "ami_id=$ami_id" >> $GITHUB_ENV  # Store in the runtime environment
+          echo "ami_id=$ami_id" >> $GITHUB_ENV
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
@@ -66,32 +71,54 @@ jobs:
           terraform apply -auto-approve \
             -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" \
             -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" \
-            -var="ami_id=${{ env.ami_id }}"  # Use directly from the runtime
+            -var="ami_id=${{ env.ami_id }}"
 
       - name: Fetch Instance IP
         id: instance_info
         run: |
           INSTANCE_IP=$(terraform output -raw instance_ip)
+          if [ -z "$INSTANCE_IP" ]; then
+            echo "Failed to get instance IP"
+            exit 1
+          fi
           echo "INSTANCE_IP=$INSTANCE_IP"
-          echo "instance_ip=$INSTANCE_IP" >> $GITHUB_ENV  # Save the instance IP in the runtime environment
+          echo "instance_ip=$INSTANCE_IP" >> $GITHUB_ENV
 
-      - name: Add SSH Key
+      - name: Wait for Instance
         run: |
+          echo "Waiting for instance to be ready..."
+          sleep 60
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
           echo "${{ secrets.AWS_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ env.instance_ip }} >> ~/.ssh/known_hosts
 
       - name: Install pown.sh via SSH
         run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ec2-user@${{ env.instance_ip }} << 'EOF'
-          curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/main/pown.sh
-          chmod +x pown.sh
-          ./pown.sh
-          EOF
+          SSH_USER="${{ matrix.os == 'debian' && 'admin' || 'ec2-user' }}"
+          max_retries=3
+          retry_count=0
+          while [ $retry_count -lt $max_retries ]; do
+            if ssh -o ConnectTimeout=30 -i ~/.ssh/id_rsa $SSH_USER@${{ env.instance_ip }} "curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/main/pown.sh && chmod +x pown.sh && ./pown.sh"; then
+              break
+            else
+              retry_count=$((retry_count+1))
+              if [ $retry_count -eq $max_retries ]; then
+                echo "Failed to connect after $max_retries attempts"
+                exit 1
+              fi
+              echo "Connection failed, retrying in 10 seconds..."
+              sleep 10
+            fi
+          done
 
-      # - name: Destroy Terraform
-      #   if: always()
-      #   run: |
-      #     terraform destroy -auto-approve \
-      #     -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" \
-      #     -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" \
-      #     -var="ami_id=${{ env.ami_id }}"
+      - name: Destroy Terraform
+        if: always()
+        run: |
+          terraform destroy -auto-approve \
+            -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" \
+            -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" \
+            -var="ami_id=${{ env.ami_id }}"
