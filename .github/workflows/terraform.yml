@@ -55,8 +55,7 @@ jobs:
             exit 1
           fi
 
-          echo "AMI_ID=$ami_id"
-          echo "ami_id=$ami_id" >> $GITHUB_ENV
+          echo "ami_id=$ami_id" >> $GITHUB_OUTPUT
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
@@ -71,17 +70,17 @@ jobs:
           terraform apply -auto-approve \
             -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" \
             -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" \
-            -var="ami_id=${{ env.ami_id }}"
+            -var="ami_id=${{ steps.fetch_ami.outputs.ami_id }}"
 
       - name: Fetch Instance IP
-        id: instance_info
+        id: ip
         run: |
           INSTANCE_IP=$(terraform output -raw instance_ip)
-          echo "INSTANCE_IP=$INSTANCE_IP" >> $GITHUB_ENV
-
-      - name: Debug Instance IP
-        run: |
-          echo "Raw IP: $INSTANCE_IP"
+          if [ -z "$INSTANCE_IP" ]; then
+            echo "Failed to get instance IP"
+            exit 1
+          fi
+          echo "instance_ip=$INSTANCE_IP" >> $GITHUB_OUTPUT
 
       - name: Wait for Instance
         run: |
@@ -93,15 +92,16 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.AWS_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ env.INSTANCE_IP }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ steps.ip.outputs.instance_ip }} >> ~/.ssh/known_hosts
 
       - name: Install pown.sh via SSH
         run: |
           SSH_USER="${{ matrix.os == 'debian' && 'admin' || 'ec2-user' }}"
           max_retries=3
           retry_count=0
+
           while [ $retry_count -lt $max_retries ]; do
-            if ssh -o ConnectTimeout=30 -i ~/.ssh/id_rsa $SSH_USER@${{ env.instance_ip }} "curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/main/pown.sh && chmod +x pown.sh && ./pown.sh"; then
+            if ssh -o ConnectTimeout=30 -i ~/.ssh/id_rsa $SSH_USER@${{ steps.ip.outputs.instance_ip }} "curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/main/pown.sh && chmod +x pown.sh && ./pown.sh"; then
               break
             else
               retry_count=$((retry_count+1))
@@ -120,4 +120,4 @@ jobs:
           terraform destroy -auto-approve \
             -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" \
             -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" \
-            -var="ami_id=${{ env.ami_id }}"
+            -var="ami_id=${{ steps.fetch_ami.outputs.ami_id }}"
