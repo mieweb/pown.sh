@@ -92,6 +92,6 @@ jobs:
         if: always()
         run: |
           terraform destroy -auto-approve \
-            -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" \
-            -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" \
-            -var="ami_id=${{ env.ami_id }}"
+          -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" \
+          -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" \
+          -var="ami_id=${{ env.ami_id }}"
