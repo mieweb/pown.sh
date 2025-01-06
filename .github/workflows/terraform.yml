@@ -75,12 +75,13 @@ jobs:
       - name: Fetch Instance IP
         id: ip
         run: |
-          instance_ip=$(terraform output instance_ip | tr -d '"' | tr -d '\n')
-          if [ -z "$instance_ip" ]; then
-            echo "Failed to get instance IP"
+          instance_ip=$(terraform output -raw instance_ip | tr -d '\n' | tr -d '\r')
+          if [[ ! "$instance_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid IP format: $instance_ip"
             exit 1
           fi
-          echo "INSTANCE_IP=$instance_ip" >> "$GITHUB_ENV"
+          echo "INSTANCE_IP=$instance_ip" >> $GITHUB_ENV
+          echo "Instance IP successfully captured: $instance_ip"
 
       - name: Wait for Instance
         run: |
