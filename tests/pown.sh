@@ -120,11 +120,11 @@ EOL
     chmod 600 /etc/sssd/sssd.conf
 
  # Configure SSSD based on the package manager
-if [ "$PACKAGE_MANAGER" = "yum" ]; then
-    # Add Red Hat specific authentication configuration
-    authselect select sssd --force
-    authselect enable-feature with-mkhomedir
-fi
+# if [ "$PACKAGE_MANAGER" = "yum" ]; then
+#     # Add Red Hat specific authentication configuration
+#     authselect select sssd --force
+#     authselect enable-feature with-mkhomedir
+# fi
 
 # Ensure SSSD service is enabled and restarted
 systemctl enable sssd
