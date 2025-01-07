@@ -22,6 +22,8 @@ detect_os_version() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
         echo "$ID-$VERSION_ID"
+    elif [ -f /etc/arch-release ]; then
+        echo "arch-linux"
     else
         echo "unknown"
     fi
@@ -60,7 +62,11 @@ EOL
     elif [ "$PACKAGE_MANAGER" = "apt" ]; then
         sudo systemctl enable ssh
         sudo systemctl restart ssh
+    elif [ "$PACKAGE_MANAGER" = "pacman" ]; then
+        sudo systemctl enable sshd
+        sudo systemctl restart sshd
     fi
+
     generate_ssh_keys
 }
 
@@ -223,7 +229,9 @@ install_packages_pacman() {
         ca-certificates \
         vim \
         net-tools \
-        iputils
+        iputils \
+        ldap-utils # Optional if available in the Arch repo
+    echo "Packages installed."
 }
 
 echo "Installing necessary packages..."
