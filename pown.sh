@@ -3,19 +3,6 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
-# # Load environment variables from .env file
-# if [ -f /root/.env ]; then
-#     echo "Loading environment variables from /root/.env..."
-#     set -o allexport
-#     source /root/.env
-#     set +o allexport
-# else
-#     echo "/root/.env file not found. Exiting."
-#     exit 1
-# fi
-
-# echo "Environment variables loaded."
-
 # Function to detect package manager
 detect_package_manager() {
     if command -v apt-get >/dev/null 2>&1; then
@@ -132,6 +119,7 @@ ldap_group_name = cn
 EOL
     sudo chmod 600 /etc/sssd/sssd.conf
 
+
     if [ "$PACKAGE_MANAGER" = "yum" ]; then
         # Add Red Hat specific authentication configuration
         sudo authselect select sssd --force
@@ -145,10 +133,11 @@ EOL
 
 setup_tls() {
     echo "Setting up TLS..."
-    if [ -z "$CA_CERT_CONTENT" ]; then
-        echo "Error: CA_CERT_CONTENT environment variable is not set"
-        exit 1
-    fi
+    echo "test"
+    # if [ -z "$CA_CERT_CONTENT" ]; then
+    #     echo "Error: CA_CERT_CONTENT environment variable is not set"
+    #     exit 1
+    # fi
 
     echo "$CA_CERT_CONTENT" | sudo tee /etc/ssl/certs/ca-cert.pem > /dev/null
     sudo chmod 644 /etc/ssl/certs/ca-cert.pem
