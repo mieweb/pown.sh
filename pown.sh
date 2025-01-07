@@ -20,11 +20,11 @@ detect_package_manager() {
 
 # Function to detect OS and version
 detect_os_version() {
-    if [ -f /etc/os-release ]; then
+    if [ -f /etc/arch-release ]; then
+        echo "arch-linux"
+    elif [ -f /etc/os-release ]; then
         . /etc/os-release
         echo "$ID-$VERSION_ID"
-    elif [ -f /etc/arch-release ]; then
-        echo "arch-linux"
     else
         echo "unknown"
     fi
@@ -277,8 +277,8 @@ install_packages_pacman() {
         ca-certificates \
         vim \
         net-tools \
-        nsswitch \
-        iputils
+        iputils \
+        pam
     echo "Packages installed."
 }
 
