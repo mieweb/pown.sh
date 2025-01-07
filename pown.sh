@@ -3,6 +3,15 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
+# Load environment variables from .env file
+if [ -f ".env" ]; then
+    echo "Loading environment variables from .env file..."
+    export $(grep -v '^#' .env | xargs)
+else
+    echo "Error: .env file not found in the current directory."
+    exit 1
+fi
+
 # Function to detect package manager
 detect_package_manager() {
     if command -v apt-get >/dev/null 2>&1; then
@@ -137,6 +146,19 @@ ldap_group_name = cn
 EOL
     sudo chmod 600 /etc/sssd/sssd.conf
 
+        # Configure NSS for SSSD
+    sudo tee /etc/nsswitch.conf <<EOL
+passwd: files sss
+shadow: files sss
+group:  files sss
+hosts: files dns myhostname
+EOL
+
+    if [ "$PACKAGE_MANAGER" = "pacman" ]; then
+        configure_arch_pam
+    fi
+
+
        if [ "$PACKAGE_MANAGER" = "yum" ]; then
         if [[ "$OS_VERSION" == "amzn-2023" ]]; then
             echo "Amazon Linux 2023 detected"
@@ -149,6 +171,41 @@ EOL
     sudo systemctl enable sssd
     sudo systemctl restart sssd
     echo "SSSD config written and permissions set."
+}
+
+
+configure_arch_pam() {
+    echo "Configuring PAM for Arch Linux..."
+    
+    # Configure PAM for SSSD
+    sudo tee /etc/pam.d/system-auth <<EOL
+#%PAM-1.0
+auth     sufficient pam_sss.so forward_pass
+auth     required  pam_unix.so try_first_pass nullok
+auth     optional  pam_permit.so
+
+account  sufficient pam_sss.so
+account  required  pam_unix.so
+account  optional  pam_permit.so
+
+password sufficient pam_sss.so use_authtok
+password required  pam_unix.so try_first_pass nullok sha512 shadow
+password optional  pam_permit.so
+
+session  required  pam_limits.so
+session  required  pam_unix.so
+session  optional  pam_sss.so
+session  required  pam_mkhomedir.so skel=/etc/skel umask=0077
+EOL
+
+    # Configure PAM for SSHD
+    sudo tee /etc/pam.d/sshd <<EOL
+#%PAM-1.0
+auth     include  system-auth
+account  include  system-auth
+password include  system-auth
+session  include  system-auth
+EOL
 }
 
 setup_tls() {
@@ -225,12 +282,10 @@ install_packages_pacman() {
         sssd \
         openldap \
         sudo \
-        nsswitch \
         ca-certificates \
         vim \
         net-tools \
-        iputils \
-        ldap-utils # Optional if available in the Arch repo
+        iputils
     echo "Packages installed."
 }
 
@@ -251,5 +306,18 @@ setup_ldap_client
 setup_sssd
 setup_tls
 configure_pam_mkhomedir
+
+if [ "$PACKAGE_MANAGER" = "pacman" ]; then
+    # Enable and start necessary services
+    sudo systemctl enable --now sssd
+    sudo systemctl enable --now sshd
+    
+    # Ensure NSS modules are working
+    sudo sss_cache -E
+    
+    # Clear SSSD cache
+    sudo rm -rf /var/lib/sss/db/*
+    sudo systemctl restart sssd
+fi
 
 echo "Setup completed successfully."
