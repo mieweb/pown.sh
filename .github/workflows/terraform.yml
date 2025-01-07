@@ -70,7 +70,6 @@ jobs:
 
       - name: Initialize Terraform
         run: terraform init
-        working-directory: tests
 
       - name: Apply Terraform
         run: |
@@ -78,7 +77,6 @@ jobs:
             -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" \
             -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" \
             -var="ami_id=${{ env.ami_id }}"
-        working-directory: tests
 
       - name: Fetch Instance IP
         id: ip
@@ -178,4 +176,3 @@ jobs:
             -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" \
             -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" \
             -var="ami_id=${{ env.ami_id }}"
-        working-directory: tests
