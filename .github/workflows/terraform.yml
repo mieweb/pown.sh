@@ -49,7 +49,7 @@ jobs:
               owners="137112412989" # Amazon Linux owner ID
               ;;
             arch-linux)
-              os_filter="arch-linux-ec2-hvm-2025.01.01.x86_64-ebs"
+              os_filter="arch-linux-std-hvm-2025.01.01.x86_64-ebs"
               owners="647457786197" # Arch Linux owner ID
               ;;
             
