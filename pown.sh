@@ -269,6 +269,8 @@ install_packages_yum() {
 
 install_packages_pacman() {
     echo "Installing packages with pacman..."
+    sudo pacman -Syy
+    sudo pacman -S --noconfirm base-devel
     sudo pacman -Sy --noconfirm \
         openssh \
         sssd \
@@ -278,7 +280,7 @@ install_packages_pacman() {
         vim \
         net-tools \
         iputils \
-        pam
+        pambase
     echo "Packages installed."
 }
 
