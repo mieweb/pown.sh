@@ -45,9 +45,10 @@ jobs:
               owners="136693071363" # Debian owner ID
               ;;
             amazon-linux)
-              os_filter="amzn2-ami-hvm-*-x86_64-gp2"
+              os_filter="al2023-ami-*-x86_64"
               owners="137112412989" # Amazon Linux owner ID
               ;;
+            
           esac
 
           ami_id=$(aws ec2 describe-images \
