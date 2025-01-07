@@ -3,14 +3,6 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
-# Load environment variables from .env file
-if [ -f ".env" ]; then
-    echo "Loading environment variables from .env file..."
-    export $(grep -v '^#' .env | xargs)
-else
-    echo "Error: .env file not found in the current directory."
-    exit 1
-fi
 
 # Function to detect package manager
 detect_package_manager() {
