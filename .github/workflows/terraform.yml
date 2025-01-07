@@ -111,10 +111,39 @@ jobs:
 
       - name: Setup SSH
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.AWS_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ env.INSTANCE_IP }} >> ~/.ssh/known_hosts
+          # Determine the correct SSH user based on the OS
+          case "${{ matrix.os }}" in
+            debian)
+              SSH_USER="admin"
+              ;;
+            amazon-linux)
+              SSH_USER="ec2-user"
+              ;;
+            arch-linux)
+              SSH_USER="arch"
+              ;;
+            *)
+              echo "Unsupported OS: ${{ matrix.os }}"
+              exit 1
+              ;;
+          esac
+
+          echo "Setting up SSH for $SSH_USER on ${matrix.os}..."
+
+          # Create the .ssh directory for the SSH user
+          SSH_HOME=$(eval echo "~$SSH_USER")
+          if [ ! -d "$SSH_HOME" ]; then
+            echo "Home directory for $SSH_USER does not exist: $SSH_HOME"
+            exit 1
+          fi
+
+          sudo mkdir -p "$SSH_HOME/.ssh"
+          sudo chmod 700 "$SSH_HOME/.ssh"
+          sudo chown -R $SSH_USER:$SSH_USER "$SSH_HOME/.ssh"
+
+          # Add instance IP to known_hosts
+          ssh-keyscan -H ${{ env.INSTANCE_IP }} >> "$SSH_HOME/.ssh/known_hosts"
+          sudo chown $SSH_USER:$SSH_USER "$SSH_HOME/.ssh/known_hosts"
 
       - name: Inspect SSH Key
         run: |
@@ -123,7 +152,25 @@ jobs:
 
       - name: Install pown.sh via SSH
         run: |
-          SSH_USER="${{ matrix.os == 'debian' && 'admin' || 'ec2-user' }}"
+          # Determine the correct SSH user based on the OS
+          case "${{ matrix.os }}" in
+            debian)
+              SSH_USER="admin"
+              ;;
+            amazon-linux)
+              SSH_USER="ec2-user"
+              ;;
+            arch-linux)
+              SSH_USER="arch"
+              ;;
+            *)
+              echo "Unsupported OS: ${{ matrix.os }}"
+              exit 1
+              ;;
+          esac
+
+          echo "Using SSH user: $SSH_USER"
+
           max_retries=3
           retry_count=0
 
@@ -174,10 +221,10 @@ jobs:
             fi
           done
 
-      - name: Destroy Terraform
-        if: always()
-        run: |
-          terraform destroy -auto-approve \
-            -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" \
-            -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" \
-            -var="ami_id=${{ env.ami_id }}"
+      # - name: Destroy Terraform
+      #   if: always()
+      #   run: |
+      #     terraform destroy -auto-approve \
+      #       -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" \
+      #       -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" \
+      #       -var="ami_id=${{ env.ami_id }}"
