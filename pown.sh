@@ -277,6 +277,7 @@ install_packages_pacman() {
         ca-certificates \
         vim \
         net-tools \
+        nsswitch \
         iputils
     echo "Packages installed."
 }
