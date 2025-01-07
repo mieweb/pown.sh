@@ -1,69 +1,178 @@
-name: Terraform Workflow with Tests
-
+name: "OS Matrix Test"
 on:
-  push:
-    branches: [main]
   pull_request:
-    branches: [main]
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      os_version:
+        description: "Operating System Version"
+        required: false
+        default: ""
 
 jobs:
-  terraform:
-    name: Terraform Setup, Validate, Plan, and Apply
+  test:
     runs-on: ubuntu-latest
     environment: dev
-
+    strategy:
+      matrix:
+        os: ["debian", "amazon-linux"]
+      fail-fast: false
     env:
-      TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
-      TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
-      TF_VAR_private_key: ${{ secrets.AWS_PRIVATE_KEY }}
+      LDAP_BASE: ${{ vars.LDAP_BASE }}
+      LDAP_URI: ${{ vars.LDAP_URI }}
+      LDAP_ADMIN_DN: ${{ vars.LDAP_ADMIN_DN }}
+      LDAP_ADMIN_PW: ${{ vars.LDAP_ADMIN_PW }}
+      CA_CERT_CONTENT: ${{vars.CA_CERT_CONTENT}}
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Setup AWS CLI
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: us-east-1
+
+      - name: Fetch AMI ID for ${{ matrix.os }}
+        id: fetch_ami
+        run: |
+          case "${{ matrix.os }}" in
+            debian)
+              os_filter="debian-12-amd64-*"
+              owners="136693071363" # Debian owner ID
+              ;;
+            amazon-linux)
+              os_filter="amzn2-ami-hvm-*-x86_64-gp2"
+              owners="137112412989" # Amazon Linux owner ID
+              ;;
+          esac
+
+          ami_id=$(aws ec2 describe-images \
+            --filters "Name=name,Values=$os_filter" "Name=state,Values=available" \
+            --owners $owners \
+            --query "Images | sort_by(@, &CreationDate)[-1].ImageId" \
+            --output text)
+
+          if [ -z "$ami_id" ]; then
+            echo "Failed to find valid AMI ID"
+            exit 1
+          fi
+
+          echo "ami_id=$ami_id" >> "$GITHUB_ENV"
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: "1.3.0"
+          terraform_version: 1.5.0
 
       - name: Initialize Terraform
-        working-directory: ./tests
         run: terraform init
 
-      - name: Validate Terraform
-        working-directory: ./tests
-        run: terraform validate
-
-      - name: Plan Terraform
-        working-directory: ./tests
-        run: terraform plan
-
       - name: Apply Terraform
-        if: github.ref == 'refs/heads/main'
-        working-directory: ./tests
-        run: terraform apply -auto-approve
-
-  tests:
-    name: Run Tests
-    runs-on: ubuntu-latest
-    needs: terraform
-    environment: dev
-
-    env:
-      TF_VAR_access_key: ${{ secrets.AWS_ACCESS_KEY }}
-      TF_VAR_secret_key: ${{ secrets.AWS_SECRET_KEY }}
-      TF_VAR_private_key: ${{ secrets.AWS_PRIVATE_KEY }}
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform (for Tests)
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.3.0"
-
-      - name: Run Tests
         run: |
-          chmod +x ./tests/test.sh
-          ./tests/test.sh
+          terraform apply -auto-approve \
+            -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" \
+            -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" \
+            -var="ami_id=${{ env.ami_id }}"
+
+      - name: Fetch Instance IP
+        id: ip
+        run: |
+          # Get the raw output
+          raw_output=$(terraform output -raw instance_ip 2>/dev/null)
+
+          # Extract only the first valid IPv4 address
+          instance_ip=$(echo "$raw_output" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)
+
+          # Validate the extracted IP
+          if [[ -z "$instance_ip" ]]; then
+            echo "Failed to extract a valid IP address from Terraform output"
+            echo "Raw output: $raw_output"
+            exit 1
+          fi
+
+          # Store the valid IP in the environment
+          echo "INSTANCE_IP=$instance_ip" >> "$GITHUB_ENV"
+          echo "Instance IP successfully captured: $instance_ip"
+
+      - name: Wait for Instance
+        run: |
+          echo "Waiting for instance to be ready..."
+          echo "Instance IP: ${{ env.INSTANCE_IP }}"
+          sleep 60
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AWS_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ env.INSTANCE_IP }} >> ~/.ssh/known_hosts
+
+      - name: Inspect SSH Key
+        run: |
+          echo "First few lines of ~/.ssh/id_rsa:"
+          head -n 5 ~/.ssh/id_rsa
+
+      - name: Install pown.sh via SSH
+        run: |
+          SSH_USER="${{ matrix.os == 'debian' && 'admin' || 'ec2-user' }}"
+          max_retries=3
+          retry_count=0
+
+          while [ $retry_count -lt $max_retries ]; do
+            if ssh -t -o ConnectTimeout=30 -i ~/.ssh/id_rsa $SSH_USER@${{ env.INSTANCE_IP }} << EOF
+          export LDAP_BASE="${{ env.LDAP_BASE }}"
+          export LDAP_URI="${{ env.LDAP_URI }}"
+          export LDAP_ADMIN_DN="${{ env.LDAP_ADMIN_DN }}"
+          export LDAP_ADMIN_PW="${{ env.LDAP_ADMIN_PW }}"
+          export CA_CERT_CONTENT= ${{ env.CA_CERT_CONTENT }} 
+
+          curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/refactor/github-action-matrix/pown.sh
+          chmod +x pown.sh
+          ./pown.sh
+          EOF
+                then
+                  break
+                else
+                  retry_count=$((retry_count+1))
+                  if [ $retry_count -eq $max_retries ]; then
+                    echo "Failed to connect after $max_retries attempts"
+                    exit 1
+                  fi
+                  echo "Connection failed, retrying in 10 seconds..."
+                  sleep 10
+                fi
+              done
+
+      - name: Test SSH with `ann`
+        run: |
+          SSH_USER="ann"
+          PASSWORD="ann"
+          max_retries=3
+          retry_count=0
+
+          while [ $retry_count -lt $max_retries ]; do
+            if sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no $SSH_USER@${{ env.INSTANCE_IP }} "echo 'SSH as $SSH_USER successful'"; then
+              echo "SSH connection as $SSH_USER succeeded"
+              break
+            else
+              retry_count=$((retry_count+1))
+              if [ $retry_count -eq $max_retries ]; then
+                echo "Failed to SSH as $SSH_USER after $max_retries attempts"
+                exit 1
+              fi
+              echo "Connection failed, retrying in 10 seconds..."
+              sleep 10
+            fi
+          done
+
+      - name: Destroy Terraform
+        if: always()
+        run: |
+          terraform destroy -auto-approve \
+            -var="access_key=${{ secrets.AWS_ACCESS_KEY }}" \
+            -var="secret_key=${{ secrets.AWS_SECRET_KEY }}" \
+            -var="ami_id=${{ env.ami_id }}"
