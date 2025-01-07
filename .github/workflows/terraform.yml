@@ -132,7 +132,7 @@ jobs:
               SSH_USER="ec2-user"
               ;;
             arch-linux)
-              SSH_USER="root"
+              SSH_USER="arch"
               ;;
             *)
               echo "Unsupported OS: ${{ matrix.os }}"
