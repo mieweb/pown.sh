@@ -17,10 +17,22 @@ detect_package_manager() {
     fi
 }
 
+# Function to detect OS and version
+detect_os_version() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        echo "$ID-$VERSION_ID"
+    else
+        echo "unknown"
+    fi
+}
+
 echo "Starting script..."
 # Detect the package manager
 PACKAGE_MANAGER=$(detect_package_manager)
+OS_VERSION=$(detect_os_version)
 echo "Detected package manager: $PACKAGE_MANAGER"
+echo "Detected OS version: $OS_VERSION"
 
 # Common configurations
 setup_ssh() {
@@ -119,11 +131,13 @@ ldap_group_name = cn
 EOL
     sudo chmod 600 /etc/sssd/sssd.conf
 
-
-    if [ "$PACKAGE_MANAGER" = "yum" ]; then
-        # Add Red Hat specific authentication configuration
-        sudo authselect select sssd --force
-        sudo authselect enable-feature with-mkhomedir
+       if [ "$PACKAGE_MANAGER" = "yum" ]; then
+        if [[ "$OS_VERSION" == "amzn-2023" ]]; then
+            echo "Amazon Linux 2023 detected"
+            sudo authselect select sssd --force
+            sudo authselect enable-feature with-mkhomedir
+            
+        fi
     fi
 
     sudo systemctl enable sssd
@@ -133,11 +147,6 @@ EOL
 
 setup_tls() {
     echo "Setting up TLS..."
-    echo "test"
-    if [ -z "$CA_CERT_CONTENT" ]; then
-        echo "Error: CA_CERT_CONTENT environment variable is not set"
-        exit 1
-    fi
 
     echo "$CA_CERT_CONTENT" | sudo tee /etc/ssl/certs/ca-cert.pem > /dev/null
     sudo chmod 644 /etc/ssl/certs/ca-cert.pem
@@ -199,7 +208,8 @@ install_packages_yum() {
         vim \
         net-tools \
         iputils \
-        authselect
+        authselect \
+        authconfig
 }
 
 install_packages_pacman() {
