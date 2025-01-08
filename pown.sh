@@ -269,19 +269,48 @@ install_packages_yum() {
 
 install_packages_pacman() {
     echo "Installing packages with pacman..."
-    sudo pacman -Syy
-    sudo pacman -S --noconfirm base-devel
-    sudo pacman -Sy --noconfirm \
-        openssh \
-        sssd \
-        openldap \
-        sudo \
-        ca-certificates \
-        vim \
-        net-tools \
-        iputils \
-        pambase
-    echo "Packages installed."
+    
+    # Initialize keyring
+    sudo mkdir -p /etc/pacman.d/gnupg
+    sudo chmod 700 /etc/pacman.d/gnupg
+    
+    # Initialize and populate keyring
+    sudo pacman-key --init
+    sudo pacman-key --populate archlinux
+    
+    # Force sync package databases
+    sudo pacman -Syy --noconfirm
+    
+    # Install base-devel which includes necessary build tools
+    echo "Installing base-devel..."
+    printf 'y\n' | sudo pacman -S --needed base-devel
+    
+    echo "Installing required packages..."
+    # Install required packages one by one to handle any potential issues
+    packages=(
+        "openssh"
+        "sssd"
+        "openldap"
+        "sudo"
+        "ca-certificates"
+        "vim"
+        "net-tools"
+        "iputils"
+        "pam"
+        "pambase"
+    )
+    
+    for package in "${packages[@]}"; do
+        echo "Installing $package..."
+        if ! sudo pacman -S --noconfirm --needed "$package"; then
+            echo "Failed to install $package"
+            exit 1
+        fi
+    done
+    
+    # Clean package cache
+    sudo pacman -Sc --noconfirm
+    echo "Packages installed successfully."
 }
 
 echo "Installing necessary packages..."
