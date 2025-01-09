@@ -102,20 +102,27 @@ setup_ssh() {
 }
 
 configure_ssh_authentication() {
-    # Update or add PasswordAuthentication
-    if sudo grep -q "^PasswordAuthentication no" "$SSH_CONF"; then
-        sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' "$SSH_CONF"
-    else
-        echo "PasswordAuthentication yes" | sudo tee -a "$SSH_CONF"
-    fi
-    
-    # Add standard SSH configuration
-    sudo tee -a "$SSH_CONF" <<EOL
-Port 22
-PermitRootLogin yes
-UsePAM yes
-EOL
+    # Define desired SSH configuration as key-value pairs
+    declare -A ssh_config=(
+        ["PasswordAuthentication"]="yes"
+        ["PermitRootLogin"]="yes"
+        ["PubkeyAuthentication"]="yes"
+        ["UsePAM"]="yes"
+        ["KbdInteractiveAuthentication"]="yes"
+        ["Port"]="22"
+        ["Protocol"]="2"
+    )
+
+    # Iterate through each configuration and update or add it
+    for key in "${!ssh_config[@]}"; do
+        if sudo grep -q "^$key" "$SSH_CONF"; then
+            sudo sed -i "s/^$key .*/$key ${ssh_config[$key]}/" "$SSH_CONF"
+        else
+            echo "$key ${ssh_config[$key]}" | sudo tee -a "$SSH_CONF" > /dev/null
+        fi
+    done
 }
+
 
 generate_ssh_keys() {
     log "Generating SSH keys if not present..."
