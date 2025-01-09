@@ -16,7 +16,7 @@ jobs:
     environment: dev
     strategy:
       matrix:
-        os: ["debian", "amazon-linux"]
+        os: ["debian", "amazon-linux", "arch-linux"]
       fail-fast: false
     env:
       LDAP_BASE: ${{ vars.LDAP_BASE }}
@@ -47,6 +47,10 @@ jobs:
             amazon-linux)
               os_filter="al2023-ami-*-x86_64"
               owners="137112412989" # Amazon Linux owner ID
+              ;;
+            arch-linux)
+              os_filter="arch-linux-std-hvm-2025.01.01.x86_64-ebs"
+              owners="647457786197" # Arch Linux owner ID
               ;;
             
           esac
@@ -119,7 +123,25 @@ jobs:
 
       - name: Install pown.sh via SSH
         run: |
-          SSH_USER="${{ matrix.os == 'debian' && 'admin' || 'ec2-user' }}"
+          # Determine the correct SSH user based on the OS
+          case "${{ matrix.os }}" in
+            debian)
+              SSH_USER="admin"
+              ;;
+            amazon-linux)
+              SSH_USER="ec2-user"
+              ;;
+            arch-linux)
+              SSH_USER="arch"
+              ;;
+            *)
+              echo "Unsupported OS: ${{ matrix.os }}"
+              exit 1
+              ;;
+          esac
+
+          echo "Using SSH user: $SSH_USER"
+
           max_retries=3
           retry_count=0
 
@@ -131,7 +153,7 @@ jobs:
           export LDAP_ADMIN_PW="${{ env.LDAP_ADMIN_PW }}"
           export CA_CERT_CONTENT= ${{ env.CA_CERT_CONTENT }} 
 
-          curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/refactor/github-action-matrix/pown.sh
+          curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/feature/pacman-config/pown.sh
           chmod +x pown.sh
           ./pown.sh
           EOF
