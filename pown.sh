@@ -11,7 +11,7 @@ readonly PAM_SYSTEM_AUTH="/etc/pam.d/system-auth"
 
 # Package lists for different package managers
 declare -A PACKAGES
-PACKAGES[apt]="ldap-utils openssh-client openssh-server sssd sssd-ldap sudo libnss-ldap libpam-ldap ca-certificates vim net-tools iputils-ping"
+PACKAGES[apt]="ldap-utils openssh-client openssh-server sssd sssd-ldap sudo libnss-sss libpam-sss ca-certificates vim net-tools iputils-ping"
 PACKAGES[yum]="openssh-clients openssh-server sssd sssd-ldap sudo openldap-clients ca-certificates vim net-tools iputils authselect authconfig"
 PACKAGES[pacman]="openssh sssd openldap sudo ca-certificates vim net-tools iputils pam pambase"
 
