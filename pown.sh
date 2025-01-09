@@ -206,6 +206,41 @@ hosts: files dns myhostname
 EOL
 }
 
+configure_arch_pam() {
+    echo "Configuring PAM for Arch Linux..."
+    
+    # Configure PAM for SSSD
+    sudo tee /etc/pam.d/system-auth <<EOL
+#%PAM-1.0
+auth     sufficient pam_sss.so forward_pass
+auth     required  pam_unix.so try_first_pass nullok
+auth     optional  pam_permit.so
+
+account  sufficient pam_sss.so
+account  required  pam_unix.so
+account  optional  pam_permit.so
+
+password sufficient pam_sss.so use_authtok
+password required  pam_unix.so try_first_pass nullok sha512 shadow
+password optional  pam_permit.so
+
+session  required  pam_limits.so
+session  required  pam_unix.so
+session  optional  pam_sss.so
+session  required  pam_mkhomedir.so skel=/etc/skel umask=0077
+EOL
+
+    # Configure PAM for SSHD
+    sudo tee /etc/pam.d/sshd <<EOL
+#%PAM-1.0
+auth     include  system-auth
+account  include  system-auth
+password include  system-auth
+session  include  system-auth
+EOL
+}
+
+
 configure_amazon_linux_auth() {
     sudo authselect select sssd --force
     sudo authselect enable-feature with-mkhomedir
