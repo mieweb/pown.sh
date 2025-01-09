@@ -153,7 +153,7 @@ jobs:
           export LDAP_ADMIN_PW="${{ env.LDAP_ADMIN_PW }}"
           export CA_CERT_CONTENT= ${{ env.CA_CERT_CONTENT }} 
 
-          curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/feature/pacman-config/pown.sh
+          curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/refactor/code-cleanup/pown.sh
           chmod +x pown.sh
           ./pown.sh
           EOF

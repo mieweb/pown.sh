@@ -3,19 +3,37 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
+# Configuration variables
+readonly SSSD_CONF="/etc/sssd/sssd.conf"
+readonly SSH_CONF="/etc/ssh/sshd_config"
+readonly PAM_SSHD="/etc/pam.d/sshd"
+readonly PAM_SYSTEM_AUTH="/etc/pam.d/system-auth"
+
+# Package lists for different package managers
+declare -A PACKAGES
+PACKAGES[apt]="ldap-utils openssh-client openssh-server sssd sssd-ldap sudo libnss-sss libpam-sss ca-certificates vim net-tools iputils-ping"
+PACKAGES[yum]="openssh-clients openssh-server sssd sssd-ldap sudo openldap-clients ca-certificates vim net-tools iputils authselect authconfig"
+PACKAGES[pacman]="openssh sssd openldap sudo ca-certificates vim net-tools iputils pam pambase"
+
+# Function to log messages
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
 
 # Function to detect package manager
 detect_package_manager() {
-    if command -v apt-get >/dev/null 2>&1; then
-        echo "apt"
-    elif command -v yum >/dev/null 2>&1; then
-        echo "yum"
-    elif command -v pacman >/dev/null 2>&1; then
-        echo "pacman"
-    else
-        echo "Unsupported package manager. Exiting."
-        exit 1
-    fi
+    local package_managers=("apt-get:apt" "yum:yum" "pacman:pacman")
+    
+    for pm in "${package_managers[@]}"; do
+        IFS=':' read -r cmd name <<< "$pm"
+        if command -v "$cmd" >/dev/null 2>&1; then
+            echo "$name"
+            return 0
+        fi
+    done
+    
+    log "Error: Unsupported package manager"
+    exit 1
 }
 
 # Function to detect OS and version
@@ -30,78 +48,119 @@ detect_os_version() {
     fi
 }
 
-echo "Starting script..."
-# Detect the package manager
-PACKAGE_MANAGER=$(detect_package_manager)
-OS_VERSION=$(detect_os_version)
-echo "Detected package manager: $PACKAGE_MANAGER"
-echo "Detected OS version: $OS_VERSION"
+# Function to install packages based on package manager
+install_packages() {
+    local package_manager=$1
+    log "Installing packages with $package_manager..."
+    
+    case $package_manager in
+        apt)
+            export DEBIAN_FRONTEND=noninteractive
+            sudo apt-get update
+            sudo apt-get install -y ${PACKAGES[apt]}
+            sudo rm -rf /var/lib/apt/lists/*
+            unset DEBIAN_FRONTEND
+            ;;
+        yum)
+            sudo yum install -y ${PACKAGES[yum]}
+            ;;
+        pacman)
+            setup_pacman_keyring
+            sudo pacman -Syy --noconfirm
+            printf 'y\n' | sudo pacman -S --needed base-devel
+            for package in ${PACKAGES[pacman]}; do
+                sudo pacman -S --noconfirm --needed "$package"
+            done
+            sudo pacman -Sc --noconfirm
+            ;;
+    esac
+}
 
-# Common configurations
+setup_pacman_keyring() {
+    log "Setting up pacman keyring..."
+    sudo mkdir -p /etc/pacman.d/gnupg
+    sudo chmod 700 /etc/pacman.d/gnupg
+    sudo pacman-key --init
+    sudo pacman-key --populate archlinux
+}
+
+# Function to set up SSH
 setup_ssh() {
-    echo "Setting up SSH..."
+    log "Setting up SSH..."
     sudo mkdir -p /var/run/sshd
+    
+    # Configure SSH
+    configure_ssh_authentication
+    generate_ssh_keys
+    
+    # Start and enable SSH service
+    local service_name="ssh"
+    [[ "$PACKAGE_MANAGER" =~ ^(yum|pacman)$ ]] && service_name="sshd"
+    
+    sudo systemctl enable "$service_name"
+    sudo systemctl restart "$service_name"
+}
 
-    # Check if PasswordAuthentication is set to 'no' and replace it with 'yes'
-    if sudo grep -q "^PasswordAuthentication no" /etc/ssh/sshd_config; then
-        echo "Updating PasswordAuthentication to 'yes' in sshd_config..."
-        sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+configure_ssh_authentication() {
+    # Update or add PasswordAuthentication
+    if sudo grep -q "^PasswordAuthentication no" "$SSH_CONF"; then
+        sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' "$SSH_CONF"
     else
-        echo "Adding PasswordAuthentication yes to sshd_config..."
-        echo "PasswordAuthentication yes" | sudo tee -a /etc/ssh/sshd_config
+        echo "PasswordAuthentication yes" | sudo tee -a "$SSH_CONF"
     fi
-
-    sudo tee -a /etc/ssh/sshd_config <<EOL
+    
+    # Add standard SSH configuration
+    sudo tee -a "$SSH_CONF" <<EOL
 Port 22
 PermitRootLogin yes
 UsePAM yes
 EOL
-    echo "SSH config written."
-    if [ "$PACKAGE_MANAGER" = "yum" ]; then
-        sudo systemctl enable sshd
-        sudo systemctl restart sshd
-    elif [ "$PACKAGE_MANAGER" = "apt" ]; then
-        sudo systemctl enable ssh
-        sudo systemctl restart ssh
-    elif [ "$PACKAGE_MANAGER" = "pacman" ]; then
-        sudo systemctl enable sshd
-        sudo systemctl restart sshd
-    fi
-
-    generate_ssh_keys
 }
 
 generate_ssh_keys() {
-    echo "Generating SSH keys if not already present..."
-    if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
-        echo "Generating RSA SSH key..."
-        sudo ssh-keygen -t rsa -f /etc/ssh/ssh_host_rsa_key -N ""
-    fi
-    if [ ! -f /etc/ssh/ssh_host_ecdsa_key ]; then
-        echo "Generating ECDSA SSH key..."
-        sudo ssh-keygen -t ecdsa -f /etc/ssh/ssh_host_ecdsa_key -N ""
-    fi
-    if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
-        echo "Generating ED25519 SSH key..."
-        sudo ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N ""
-    fi
+    log "Generating SSH keys if not present..."
+    local key_types=("rsa" "ecdsa" "ed25519")
+    
+    for type in "${key_types[@]}"; do
+        local key_file="/etc/ssh/ssh_host_${type}_key"
+        if [ ! -f "$key_file" ]; then
+            log "Generating $type SSH key..."
+            sudo ssh-keygen -t "$type" -f "$key_file" -N ""
+        fi
+    done
 }
 
+# Function to set up LDAP client
 setup_ldap_client() {
-    echo "Setting up LDAP client..."
+    log "Setting up LDAP client..."
     sudo mkdir -p /etc/ldap
+    
     sudo tee /etc/ldap/ldap.conf <<EOL
 BASE    $LDAP_BASE
 URI     $LDAP_URI
 BINDDN  $LDAP_ADMIN_DN
 TLS_REQCERT allow
 EOL
-    echo "LDAP client config written."
 }
 
+# Function to set up SSSD
 setup_sssd() {
-    echo "Setting up SSSD..."
-    sudo tee /etc/sssd/sssd.conf <<EOL
+    log "Setting up SSSD..."
+    create_sssd_config
+    configure_nss
+    
+    if [ "$PACKAGE_MANAGER" = "pacman" ]; then
+        configure_arch_pam
+    elif [ "$PACKAGE_MANAGER" = "yum" ] && [[ "$OS_VERSION" == "amzn-2023" ]]; then
+        configure_amazon_linux_auth
+    fi
+    
+    sudo systemctl enable sssd
+    sudo systemctl restart sssd
+}
+
+create_sssd_config() {
+    sudo tee "$SSSD_CONF" <<EOL
 [sssd]
 config_file_version = 2
 services = nss, pam, ssh
@@ -122,7 +181,6 @@ cache_credentials = true
 enumerate = true
 ldap_id_use_start_tls = false
 ldap_tls_cacert = $CA_CERT
-
 ldap_user_object_class = posixAccount
 ldap_group_object_class = posixGroup
 ldap_user_home_directory = homeDirectory
@@ -136,35 +194,17 @@ ldap_user_ssh_public_key = sshPublicKey
 ldap_auth_disable_tls_never_use_in_production = true
 ldap_group_name = cn
 EOL
-    sudo chmod 600 /etc/sssd/sssd.conf
+    sudo chmod 600 "$SSSD_CONF"
+}
 
-        # Configure NSS for SSSD
+configure_nss() {
     sudo tee /etc/nsswitch.conf <<EOL
 passwd: files sss
 shadow: files sss
 group:  files sss
 hosts: files dns myhostname
 EOL
-
-    if [ "$PACKAGE_MANAGER" = "pacman" ]; then
-        configure_arch_pam
-    fi
-
-
-       if [ "$PACKAGE_MANAGER" = "yum" ]; then
-        if [[ "$OS_VERSION" == "amzn-2023" ]]; then
-            echo "Amazon Linux 2023 detected"
-            sudo authselect select sssd --force
-            sudo authselect enable-feature with-mkhomedir
-            
-        fi
-    fi
-
-    sudo systemctl enable sssd
-    sudo systemctl restart sssd
-    echo "SSSD config written and permissions set."
 }
-
 
 configure_arch_pam() {
     echo "Configuring PAM for Arch Linux..."
@@ -200,22 +240,28 @@ session  include  system-auth
 EOL
 }
 
-setup_tls() {
-    echo "Setting up TLS..."
 
+configure_amazon_linux_auth() {
+    sudo authselect select sssd --force
+    sudo authselect enable-feature with-mkhomedir
+}
+
+# Function to set up TLS
+setup_tls() {
+    log "Setting up TLS..."
     echo "$CA_CERT_CONTENT" | sudo tee /etc/ssl/certs/ca-cert.pem > /dev/null
     sudo chmod 644 /etc/ssl/certs/ca-cert.pem
-    echo "TLS certificate written."
+    
+    update_ca_certificates
+}
 
-    echo "Updating CA certificates..."
-    if [ "$PACKAGE_MANAGER" = "apt" ]; then
-        sudo update-ca-certificates
-    elif [ "$PACKAGE_MANAGER" = "yum" ]; then
-        sudo update-ca-trust extract
-    elif [ "$PACKAGE_MANAGER" = "pacman" ]; then
-        sudo update-ca-trust
-    fi
-    echo "CA certificates updated."
+update_ca_certificates() {
+    log "Updating CA certificates..."
+    case $PACKAGE_MANAGER in
+        apt)    sudo update-ca-certificates ;;
+        yum)    sudo update-ca-trust extract ;;
+        pacman) sudo update-ca-trust ;;
+    esac
 }
 
 configure_pam_mkhomedir() {
@@ -230,118 +276,37 @@ configure_pam_mkhomedir() {
     fi
 }
 
-install_packages_apt() {
-    echo "Installing packages with apt..."
-    export DEBIAN_FRONTEND=noninteractive
-    sudo apt-get update && sudo apt-get install -y \
-        ldap-utils \
-        openssh-client \
-        openssh-server \
-        sssd \
-        sssd-ldap \
-        sudo \
-        libnss-ldap \
-        libpam-ldap \
-        ca-certificates \
-        vim \
-        net-tools \
-        iputils-ping && \
-        sudo rm -rf /var/lib/apt/lists/*
-    unset DEBIAN_FRONTEND
+# Main execution
+main() {
+    log "Starting system setup..."
+    
+    # Detect system configuration
+    PACKAGE_MANAGER=$(detect_package_manager)
+    OS_VERSION=$(detect_os_version)
+    log "Detected package manager: $PACKAGE_MANAGER"
+    log "Detected OS version: $OS_VERSION"
+    
+    # Install necessary packages
+    install_packages "$PACKAGE_MANAGER"
+    
+    # Set up services
+    setup_ssh
+    setup_ldap_client
+    setup_sssd
+    setup_tls
+    configure_pam_mkhomedir
+    
+    # Additional setup for Arch Linux
+    if [ "$PACKAGE_MANAGER" = "pacman" ]; then
+        sudo systemctl enable --now sssd
+        sudo systemctl enable --now sshd
+        sudo sss_cache -E
+        sudo rm -rf /var/lib/sss/db/*
+        sudo systemctl restart sssd
+    fi
+    
+    log "Setup completed successfully."
 }
 
-install_packages_yum() {
-    echo "Installing packages with yum..."
-    sudo yum install -y \
-        openssh-clients \
-        openssh-server \
-        sssd \
-        sssd-ldap \
-        sudo \
-        openldap-clients \
-        ca-certificates \
-        vim \
-        net-tools \
-        iputils \
-        authselect \
-        authconfig
-}
-
-install_packages_pacman() {
-    echo "Installing packages with pacman..."
-    
-    # Initialize keyring
-    sudo mkdir -p /etc/pacman.d/gnupg
-    sudo chmod 700 /etc/pacman.d/gnupg
-    
-    # Initialize and populate keyring
-    sudo pacman-key --init
-    sudo pacman-key --populate archlinux
-    
-    # Force sync package databases
-    sudo pacman -Syy --noconfirm
-    
-    # Install base-devel which includes necessary build tools
-    echo "Installing base-devel..."
-    printf 'y\n' | sudo pacman -S --needed base-devel
-    
-    echo "Installing required packages..."
-    # Install required packages one by one to handle any potential issues
-    packages=(
-        "openssh"
-        "sssd"
-        "openldap"
-        "sudo"
-        "ca-certificates"
-        "vim"
-        "net-tools"
-        "iputils"
-        "pam"
-        "pambase"
-    )
-    
-    for package in "${packages[@]}"; do
-        echo "Installing $package..."
-        if ! sudo pacman -S --noconfirm --needed "$package"; then
-            echo "Failed to install $package"
-            exit 1
-        fi
-    done
-    
-    # Clean package cache
-    sudo pacman -Sc --noconfirm
-    echo "Packages installed successfully."
-}
-
-echo "Installing necessary packages..."
-if [ "$PACKAGE_MANAGER" = "apt" ]; then
-    install_packages_apt
-elif [ "$PACKAGE_MANAGER" = "yum" ]; then
-    install_packages_yum
-elif [ "$PACKAGE_MANAGER" = "pacman" ]; then
-    install_packages_pacman
-else
-    echo "Unsupported package manager. Exiting."
-    exit 1
-fi
-
-setup_ssh
-setup_ldap_client
-setup_sssd
-setup_tls
-configure_pam_mkhomedir
-
-if [ "$PACKAGE_MANAGER" = "pacman" ]; then
-    # Enable and start necessary services
-    sudo systemctl enable --now sssd
-    sudo systemctl enable --now sshd
-    
-    # Ensure NSS modules are working
-    sudo sss_cache -E
-    
-    # Clear SSSD cache
-    sudo rm -rf /var/lib/sss/db/*
-    sudo systemctl restart sssd
-fi
-
-echo "Setup completed successfully."
+# Execute main function
+main
