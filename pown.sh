@@ -229,6 +229,18 @@ update_ca_certificates() {
     esac
 }
 
+configure_pam_mkhomedir() {
+    echo "Configuring PAM for SSHD to enable pam_mkhomedir..."
+    PAM_FILE="/etc/pam.d/sshd"
+
+    if ! sudo grep -q "pam_mkhomedir.so" "$PAM_FILE"; then
+        echo "Adding pam_mkhomedir.so configuration to $PAM_FILE..."
+        echo "session required pam_mkhomedir.so skel=/etc/skel umask=0077" | sudo tee -a "$PAM_FILE"
+    else
+        echo "pam_mkhomedir.so is already configured in $PAM_FILE. Skipping."
+    fi
+}
+
 # Main execution
 main() {
     log "Starting system setup..."
