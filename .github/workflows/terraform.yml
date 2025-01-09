@@ -16,7 +16,7 @@ jobs:
     environment: dev
     strategy:
       matrix:
-        os: ["debian", "amazon-linux", "arch-linux"]
+        os: ["debian", "amazon-linux", "arch-linux", "ubuntu"]
       fail-fast: false
     env:
       LDAP_BASE: ${{ vars.LDAP_BASE }}
@@ -51,6 +51,10 @@ jobs:
             arch-linux)
               os_filter="arch-linux-std-hvm-2025.01.01.x86_64-ebs"
               owners="647457786197" # Arch Linux owner ID
+              ;;
+            ubuntu)
+              os_filter="ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"
+              owners="099720109477" # Ubuntu owner ID
               ;;
             
           esac
@@ -134,6 +138,9 @@ jobs:
             arch-linux)
               SSH_USER="arch"
               ;;
+            ubuntu)
+              SSH_USER="ubuntu"
+              ;;
             *)
               echo "Unsupported OS: ${{ matrix.os }}"
               exit 1
@@ -153,7 +160,7 @@ jobs:
           export LDAP_ADMIN_PW="${{ env.LDAP_ADMIN_PW }}"
           export CA_CERT_CONTENT= ${{ env.CA_CERT_CONTENT }} 
 
-          curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/refactor/code-cleanup/pown.sh
+          curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/feature/ubuntu/pown.sh
           chmod +x pown.sh
           ./pown.sh
           EOF
