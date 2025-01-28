@@ -17,8 +17,8 @@ fetch_ami_id() {
             owners="137112412989"
             ;;
         arch-linux)
-            os_filter="arch-linux-std-hvm-2025.01.01.x86_64-ebs"
-            owners="647457786197"
+            os_filter="arch-linux-std-hvm-*"
+            owners="647457786197" # Arch Linux owner ID
             ;;
         ubuntu)
             os_filter="ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"
@@ -99,7 +99,7 @@ export LDAP_ADMIN_DN="$LDAP_ADMIN_DN"
 export LDAP_ADMIN_PW="$LDAP_ADMIN_PW"
 export CA_CERT_CONTENT="$CA_CERT_CONTENT"
 
-curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/feature/ubuntu/pown.sh
+curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/feature/update-tests/pown.sh
 chmod +x pown.sh
 ./pown.sh
 EOF
