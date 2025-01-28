@@ -3,6 +3,7 @@
 This project provides automated LDAP client setup across different Linux distributions (Debian, Amazon Linux) with AWS infrastructure testing capabilities.
 
 ## Features
+
 - Automated LDAP client configuration
 - SSH setup with secure defaults
 - SSSD configuration
@@ -11,9 +12,11 @@ This project provides automated LDAP client setup across different Linux distrib
 - AWS infrastructure testing with Terraform
 
 ## Prerequisites
+
 - AWS credentials (access key and secret key)
 - SSH key pair named "test" in AWS
 - `.env` file with LDAP configuration:
+
 ```
 LDAP_BASE=<your-ldap-base>
 LDAP_URI=<your-ldap-uri>
@@ -24,7 +27,9 @@ CA_CERT_CONTENT=<certificate-content>
 ```
 
 ## Testing
+
 Run the test script to verify infrastructure deployment:
+
 ```bash
 ./test.sh
 ```
