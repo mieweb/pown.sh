@@ -49,7 +49,7 @@ jobs:
               owners="137112412989" # Amazon Linux owner ID
               ;;
             arch-linux)
-              os_filter="arch-linux-std-hvm-2025.01.01.x86_64-ebs"
+              os_filter="arch-linux-std-hvm-*"
               owners="647457786197" # Arch Linux owner ID
               ;;
             ubuntu)
@@ -160,7 +160,7 @@ jobs:
           export LDAP_ADMIN_PW="${{ env.LDAP_ADMIN_PW }}"
           export CA_CERT_CONTENT= ${{ env.CA_CERT_CONTENT }} 
 
-          curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/feature/ubuntu/pown.sh
+          curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/feature/update-tests/pown.sh
           chmod +x pown.sh
           ./pown.sh
           EOF
