@@ -3,6 +3,9 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
+# Load environment variables
+[ -f .env ] && export $(grep -v '^#' .env | xargs)
+
 # Configuration variables
 readonly SSSD_CONF="/etc/sssd/sssd.conf"
 readonly SSH_CONF="/etc/ssh/sshd_config"
