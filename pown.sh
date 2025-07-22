@@ -172,38 +172,49 @@ setup_sssd() {
 create_sssd_config() {
     sudo tee "$SSSD_CONF" <<EOL
 [sssd]
+domains = LDAP
 config_file_version = 2
 services = nss, pam, ssh
-domains = LDAP
 
 [domain/LDAP]
 debug_level = 9
-access_provider = ldap
 id_provider = ldap
 auth_provider = ldap
-chpass_provider = ldap
-ldap_uri = $LDAP_URI
-ldap_search_base = $LDAP_BASE
-ldap_default_bind_dn = $LDAP_ADMIN_DN
-ldap_default_authtok = $LDAP_ADMIN_PW
+ldap_uri = ${LDAP_URI}
+ldap_enforce_password_policy = false
+ldap_search_base = ${LDAP_BASE}
+
+ldap_connection_expire_timeout = 30
+ldap_connection_expire_offset = 0
+ldap_account_expire_policy = ad
+ldap_network_timeout = 30
+ldap_opt_timeout = 30
+ldap_timeout = 30
+
+ldap_tls_cacert = ${CA_CERT}
 ldap_tls_reqcert = never
+ldap_id_use_start_tls = false
+ldap_schema = rfc2307
+
 cache_credentials = true
 enumerate = true
-ldap_id_use_start_tls = false
-ldap_tls_cacert = $CA_CERT
+
 ldap_user_object_class = posixAccount
-ldap_group_object_class = posixGroup
+ldap_user_name = uid
 ldap_user_home_directory = homeDirectory
 ldap_user_shell = loginShell
-ldap_user_uid = uid
-ldap_user_name = uid
-ignore_missing_attributes = True
-ldap_access_order = filter
-ldap_access_filter = (objectClass=posixAccount)
-ldap_user_ssh_public_key = sshPublicKey
-ldap_auth_disable_tls_never_use_in_production = true
-ldap_group_name = cn
+ldap_user_gecos = gecos
+ldap_user_shadow_last_change = shadowLastChange
+
+[pam]
+pam_response_filter = ENV
+pam_verbosity = 3
+pam_id_timeout = 30
+pam_pwd_response_prompt = Password: 
+pam_pwd_response_timeout = 30
+
 EOL
+
     sudo chmod 600 "$SSSD_CONF"
 }
 
@@ -259,11 +270,15 @@ configure_amazon_linux_auth() {
 # Function to set up TLS
 setup_tls() {
     log "Setting up TLS..."
-    echo "$CA_CERT_CONTENT" | sudo tee /etc/ssl/certs/ca-cert.pem > /dev/null
-    sudo chmod 644 /etc/ssl/certs/ca-cert.pem
-    
+
+    sudo mkdir -p /certificates
+
+    echo "$CA_CERT_CONTENT" | sudo tee /certificates/ca-cert.pem > /dev/null
+    sudo chmod 644 /certificates/ca-cert.pem
+
     update_ca_certificates
 }
+
 
 update_ca_certificates() {
     log "Updating CA certificates..."
