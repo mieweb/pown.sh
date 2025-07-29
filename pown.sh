@@ -301,6 +301,12 @@ configure_pam_mkhomedir() {
     fi
 }
 
+configure_sudo_access() {
+    log "Granting sudo access to LDAP group..."
+    echo '%#9999 ALL=(ALL:ALL) ALL' | sudo tee /etc/sudoers.d/proxmox-sudo
+    sudo chmod 440 /etc/sudoers.d/proxmox-sudo
+}
+
 # Main execution
 main() {
     log "Starting system setup..."
@@ -320,6 +326,7 @@ main() {
     setup_sssd
     setup_tls
     configure_pam_mkhomedir
+    configure_sudo_access
     
     # Additional setup for Arch Linux
     if [ "$PACKAGE_MANAGER" = "pacman" ]; then
