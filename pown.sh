@@ -17,6 +17,7 @@ declare -A PACKAGES
 PACKAGES[apt]="ldap-utils openssh-client openssh-server sssd sssd-ldap sudo libnss-sss libpam-sss ca-certificates vim net-tools iputils-ping"
 PACKAGES[yum]="openssh-clients openssh-server sssd sssd-ldap sudo openldap-clients ca-certificates vim net-tools iputils authselect authconfig"
 PACKAGES[pacman]="openssh sssd openldap sudo ca-certificates vim net-tools iputils pam pambase"
+PACKAGES[dnf]="openssh-clients openssh-server sssd sssd-ldap sudo openldap-clients ca-certificates vim net-tools iputils authselect authconfig"
 
 # Function to log messages
 log() {
@@ -25,7 +26,7 @@ log() {
 
 # Function to detect package manager
 detect_package_manager() {
-    local package_managers=("apt-get:apt" "yum:yum" "pacman:pacman")
+    local package_managers=("apt-get:apt" "dnf:dnf" "yum:yum" "pacman:pacman")
     
     for pm in "${package_managers[@]}"; do
         IFS=':' read -r cmd name <<< "$pm"
@@ -67,6 +68,9 @@ install_packages() {
         yum)
             sudo yum install -y ${PACKAGES[yum]}
             ;;
+        dnf)
+           sudo dnf install -y ${PACKAGES[dnf]}
+           ;;
         pacman)
             setup_pacman_keyring
             sudo pacman -Syy --noconfirm
@@ -98,7 +102,7 @@ setup_ssh() {
     
     # Start and enable SSH service
     local service_name="ssh"
-    [[ "$PACKAGE_MANAGER" =~ ^(yum|pacman)$ ]] && service_name="sshd"
+    [[ "$PACKAGE_MANAGER" =~ ^(yum|pacman|dnf)$ ]] && service_name="sshd"
     
     sudo systemctl enable "$service_name"
     sudo systemctl restart "$service_name"
@@ -149,7 +153,7 @@ setup_ldap_client() {
 BASE    $LDAP_BASE
 URI     $LDAP_URI
 BINDDN  $LDAP_ADMIN_DN
-TLS_REQCERT allow
+TLS_REQCERT never
 EOL
 }
 
@@ -161,8 +165,8 @@ setup_sssd() {
     
     if [ "$PACKAGE_MANAGER" = "pacman" ]; then
         configure_arch_pam
-    elif [ "$PACKAGE_MANAGER" = "yum" ] && [[ "$OS_VERSION" == "amzn-2023" ]]; then
-        configure_amazon_linux_auth
+    elif [ "$PACKAGE_MANAGER" = "yum" ] || [ "$PACKAGE_MANAGER" = "dnf" ]; then
+        configure_sssd_authselect
     fi
     
     sudo systemctl enable sssd
@@ -262,9 +266,8 @@ EOL
 }
 
 
-configure_amazon_linux_auth() {
+configure_sssd_authselect() {
     sudo authselect select sssd --force
-    sudo authselect enable-feature with-mkhomedir
 }
 
 # Function to set up TLS
