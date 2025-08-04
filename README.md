@@ -1,37 +1,51 @@
 # LDAP Client Automation
 
-This project provides automated LDAP client setup across different Linux distributions (Debian, Amazon Linux) with AWS infrastructure testing capabilities.
+This project automates LDAP client setup across various Linux distributions (Debian, Amazon Linux, Rocky Linux etc.) and includes AWS infrastructure testing via Terraform.
 
 ## Features
 
-- Automated LDAP client configuration
-- SSH setup with secure defaults
-- SSSD configuration
-- TLS certificate management
-- Supports multiple package managers (apt, yum, pacman)
-- AWS infrastructure testing with Terraform
+* Automated LDAP client configuration via `pown.sh`
+* SSH setup with secure defaults
+* SSSD setup and LDAP authentication support
+* TLS certificate handling
+* Cross-distro support: `apt`, `yum`, `pacman`
+* AWS-based infrastructure testing
 
-## Prerequisites
+## Run in Any Container
 
-- AWS credentials (access key and secret key)
-- SSH key pair named "test" in AWS
-- `.env` file with LDAP configuration:
+You can run this script in **any Linux container** to configure it as an LDAP client:
 
-```
-LDAP_BASE=<your-ldap-base>
-LDAP_URI=<your-ldap-uri>
-LDAP_ADMIN_DN=<your-admin-dn>
-LDAP_ADMIN_PW=<your-admin-password>
-CA_CERT=<path-to-ca-cert>
-CA_CERT_CONTENT=<certificate-content>
+```bash
+curl -O https://raw.githubusercontent.com/anishapant21/pown.sh/main/pown.sh
+chmod +x pown.sh
+./pown.sh
 ```
 
-## Testing
+### Required `.env` File
 
-Run the test script to verify infrastructure deployment:
+Before running the script, make sure to create a `.env` file in the container (same directory as `pown.sh`) with the following contents:
+
+```env
+LDAP_BASE=dc=example,dc=com
+LDAP_URI=ldap://your-ldap-host
+CA_CERT=/path/to/ca.pem
+CA_CERT_CONTENT="-----BEGIN CERTIFICATE-----..."
+```
+
+> This `.env` file is required **both** for container execution and AWS-based testing.
+
+## AWS Infrastructure Testing
+
+To validate this setup on real infrastructure:
 
 ```bash
 ./test.sh
 ```
 
-The script will create test instances on AWS, verify their accessibility, and clean up automatically.
+This script will:
+
+* Launch test EC2 instances using Terraform
+* Run the LDAP setup using `pown.sh`
+* Validate SSH and LDAP-based login
+* Automatically clean up all resources
+
