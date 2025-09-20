@@ -11,6 +11,7 @@ readonly SSSD_CONF="/etc/sssd/sssd.conf"
 readonly SSH_CONF="/etc/ssh/sshd_config"
 readonly PAM_SSHD="/etc/pam.d/sshd"
 readonly PAM_SYSTEM_AUTH="/etc/pam.d/system-auth"
+readonly COMPLETION_MARKER="/var/lib/pown.completed"
 
 # Package lists for different package managers
 declare -A PACKAGES
@@ -312,6 +313,13 @@ configure_sudo_access() {
 
 # Main execution
 main() {
+    # Check if script has already completed successfully
+    if [ -f "$COMPLETION_MARKER" ] && [ "$FORCE_RUN" != "true" ]; then
+        log "Setup has already been completed successfully."
+        log "Use -f flag to force re-run: $0 -f"
+        exit 0
+    fi
+    
     log "Starting system setup..."
     
     # Detect system configuration
@@ -341,7 +349,33 @@ main() {
     fi
     
     log "Setup completed successfully."
+    
+    # Mark completion
+    sudo mkdir -p "$(dirname "$COMPLETION_MARKER")"
+    sudo touch "$COMPLETION_MARKER"
 }
+
+# Parse command line arguments
+FORCE_RUN="false"
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -f|--force)
+            FORCE_RUN="true"
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 [-f|--force] [-h|--help]"
+            echo "  -f, --force   Force re-run even if already completed"
+            echo "  -h, --help    Show this help message"
+            exit 0
+            ;;
+        *)
+            log "Unknown option: $1"
+            echo "Use $0 -h for help"
+            exit 1
+            ;;
+    esac
+done
 
 # Execute main function
 main
