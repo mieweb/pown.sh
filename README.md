@@ -14,20 +14,18 @@ This project automates LDAP client setup across various Linux distributions (Deb
 
 ## Quick Start
 
-### Option 1: Direct Download (Recommended)
+### Interactive Setup
 
 ```bash
-# Download and run directly via Cloudflare CDN (fastest)
-curl -s https://pownsh.mieweb.workers.dev | bash
-
-# Or download from GitHub
-curl -s https://raw.githubusercontent.com/mieweb/pown.sh/main/pown.sh | bash
+# Download and run directly
+curl -s https://pown.sh | bash
 ```
 
-### Option 2: Local Download
+### Non-Interactive with Domain
 
 ```bash
-curl -O https://raw.githubusercontent.com/mieweb/pown.sh/main/pown.sh | bash
+# Pass domain as command line argument (skips domain prompt)
+curl -s https://pown.sh | bash -s -- example.com
 ```
 
 
@@ -58,7 +56,7 @@ CA_CERT_CONTENT="-----BEGIN CERTIFICATE-----
 -----END CERTIFICATE-----"
 ```
 
-## Cloudflare Worker Distribution
+## Global Distribution
 
 The script is distributed globally via Cloudflare Workers for optimal performance:
 
@@ -71,20 +69,20 @@ The script is distributed globally via Cloudflare Workers for optimal performanc
 
 The script is served globally through a Cloudflare Worker that:
 
-- **Fetches** the latest script from GitHub's main branch
+- **Fetches** the latest script from the source repository
 - **Caches** at Cloudflare's edge locations worldwide (10-second TTL)
 - **Appends metadata** including commit hash, timestamp, and source URL
-- **Handles errors** gracefully with 502 responses for GitHub issues
+- **Handles errors** gracefully with 502 responses
 
-**Deployment**: The worker is deployed at `https://pownsh.bh.workers.dev/`
+**Deployment**: The worker is deployed at `https://pown.sh`
 
 **Management**: [Cloudflare Dashboard](https://dash.cloudflare.com/10825d9d1d920e844ccd0326c66dfc45/workers/services/view/pownsh/production/metrics)
 
 ### Development Workflow
 
 1. **Make changes** to `pown.sh` in this repository
-2. **Commit to main branch** - changes are automatically available via worker
-3. **Test locally** with `./pown.sh` or via worker URL
+2. **Deploy changes** - updates are automatically available via worker
+3. **Test locally** with `./pown.sh` or via `https://pown.sh`
 4. **Monitor metrics** in Cloudflare dashboard
 
 ## AWS Infrastructure Testing
