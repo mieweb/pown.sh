@@ -31,19 +31,80 @@ check_root_privileges() {
     fi
 }
 
-# Check root privileges first
+# Function to show help
+show_help() {
+    cat << EOF
+pown.sh - LDAP Client Automation Script
+
+USAGE:
+    pown.sh [OPTION] [DOMAIN]
+
+OPTIONS:
+    --undo              Undo LDAP configuration and restore original settings
+    --help, -h          Show this help message
+
+ARGUMENTS:
+    DOMAIN              Domain name for LDAP configuration (optional)
+                       If not provided, will be prompted interactively
+
+EXAMPLES:
+    pown.sh                          # Interactive setup
+    pown.sh example.com              # Setup with domain
+    pown.sh --undo                   # Undo LDAP configuration
+
+DESCRIPTION:
+    This script automates LDAP client setup across various platforms including
+    Linux distributions (Debian, RHEL, Arch) and macOS. It configures LDAP
+    authentication, SSH access, and certificate management.
+
+    On first run, the script creates backups of original configuration files
+    which can be restored using the --undo option.
+
+EOF
+}
+
+# Check root privileges first (before parsing arguments so we can pass them along)
 check_root_privileges "$@"
 
-# Load environment variables
-[ -f "$ENV_FILE" ] && export $(grep -v '^#' "$ENV_FILE" | xargs)
+# Parse command line arguments
+UNDO_MODE=false
+DOMAIN_ARG=""
+
+while [[ $# -gt 0 ]]; do
+echo "Processing argument: $1"  # Debugging line
+    case $1 in
+        --undo)
+        echo "Enabling undo mode"
+            UNDO_MODE=true
+            shift
+            ;;
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            echo "Use --help for usage information" >&2
+            exit 1
+            ;;
+        *)
+            DOMAIN_ARG="$1"
+            shift
+            ;;
+    esac
+done
 
 # Configuration variables
 readonly LOGFILE="/etc/pown.sh.setup.log"
 readonly ENV_FILE="/etc/pown.sh.env"
+readonly BACKUP_DIR="/etc/pown.sh.backups"
 readonly SSSD_CONF="/etc/sssd/sssd.conf"
 readonly SSH_CONF="/etc/ssh/sshd_config"
 readonly PAM_SSHD="/etc/pam.d/sshd"
 readonly PAM_SYSTEM_AUTH="/etc/pam.d/system-auth"
+
+# Load environment variables (after ENV_FILE is defined)
+[ -f "$ENV_FILE" ] && export $(grep -v '^#' "$ENV_FILE" | xargs)
 
 # Function to get packages for package manager
 get_packages() {
@@ -76,6 +137,12 @@ get_packages() {
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >&2
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> $LOGFILE
+}
+
+# Function to log and execute commands
+exec_log() {
+    log "Executing: $*"
+    "$@"
 }
 
 # Function to generate LDAP_BASE from domain
@@ -669,13 +736,13 @@ setup_ssh() {
     # Start and enable SSH service
     if [ "$PACKAGE_MANAGER" = "macos-native" ]; then
         # macOS uses launchctl for service management
-        sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || log "SSH service already running or not available"
+        exec_log sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || log "SSH service already running or not available"
     else
         local service_name="ssh"
         [[ "$PACKAGE_MANAGER" =~ ^(yum|pacman|dnf)$ ]] && service_name="sshd"
         
-        sudo systemctl enable "$service_name"
-        sudo systemctl restart "$service_name"
+        exec_log sudo systemctl enable "$service_name"
+        exec_log sudo systemctl restart "$service_name"
     fi
 }
 
@@ -697,9 +764,10 @@ configure_ssh_authentication() {
         local value=$(echo "$setting" | cut -d' ' -f2-)
         
         if sudo grep -q "^$key" "$SSH_CONF"; then
-            sudo sed -i "s/^$key .*/$key $value/" "$SSH_CONF"
+            # Use macOS-compatible sed syntax with backup extension
+            exec_log sudo sed -i.bak "s/^$key .*/$key $value/" "$SSH_CONF"
         else
-            echo "$key $value" | sudo tee -a "$SSH_CONF" > /dev/null
+            exec_log echo "$key $value" | sudo tee -a "$SSH_CONF" > /dev/null
         fi
     done
 }
@@ -753,8 +821,8 @@ setup_sssd() {
         configure_sssd_authselect
     fi
     
-    sudo systemctl enable sssd
-    sudo systemctl restart sssd
+    exec_log sudo systemctl enable sssd
+    exec_log sudo systemctl restart sssd
 }
 
 create_sssd_config() {
@@ -911,21 +979,21 @@ update_ca_certificates() {
     case $PACKAGE_MANAGER in
         apt)    
             # For Debian/Ubuntu, copy to the ca-certificates directory and update
-            sudo cp "$CA_CERT" /usr/local/share/ca-certificates/ldap-ca-cert.crt
-            sudo update-ca-certificates
+            exec_log sudo cp "$CA_CERT" /usr/local/share/ca-certificates/ldap-ca-cert.crt
+            exec_log sudo update-ca-certificates
             ;;
         yum|dnf)    
             # For RHEL/CentOS/Fedora, copy to anchors and update trust
-            sudo cp "$CA_CERT" /etc/pki/ca-trust/source/anchors/ldap-ca-cert.pem
-            sudo update-ca-trust extract
+            exec_log sudo cp "$CA_CERT" /etc/pki/ca-trust/source/anchors/ldap-ca-cert.pem
+            exec_log sudo update-ca-trust extract
             ;;
         pacman) 
             # For Arch Linux, the file is already in the right place
-            sudo update-ca-trust
+            exec_log sudo update-ca-trust
             ;;
         macos-native)
             # For macOS, add to system keychain
-            sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$CA_CERT"
+            exec_log sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$CA_CERT"
             ;;
     esac
 }
@@ -952,6 +1020,16 @@ configure_sudo_access() {
 setup_macos_ldap() {
     log "Setting up LDAP on macOS using native Directory Services..."
     
+    # Check if LDAP_URI is set
+    if [ -z "$LDAP_URI" ]; then
+        log "Error: LDAP_URI is not set. Cannot configure LDAP directory service."
+        log "Debug: Current environment variables:"
+        log "  LDAP_URI='$LDAP_URI'"
+        log "  LDAP_BASE='$LDAP_BASE'"
+        log "  LDAP_ADMIN_DN='$LDAP_ADMIN_DN'"
+        return 1
+    fi
+    
     # Parse LDAP URI to get components
     local ldap_host port protocol
     if [[ "$LDAP_URI" =~ ^(ldaps?)://([^:]+):?([0-9]+)?$ ]]; then
@@ -968,7 +1046,7 @@ setup_macos_ldap() {
             fi
         fi
     else
-        log "Error: Could not parse LDAP URI: $LDAP_URI"
+        log "Error: Could not parse LDAP URI: '$LDAP_URI'"
         return 1
     fi
     
@@ -983,17 +1061,16 @@ setup_macos_ldap() {
     
     # Add SSL option for LDAPS
     if [ "$protocol" = "ldaps" ]; then
-        dsconfigldap_cmd="$dsconfigldap_cmd -c"  # -c enables SSL
+        dsconfigldap_cmd="$dsconfigldap_cmd -x"  # -x enables SSL connection
     fi
     
     # Execute the configuration
-    log "Executing: $dsconfigldap_cmd"
-    if eval "$dsconfigldap_cmd"; then
+    if exec_log eval "$dsconfigldap_cmd"; then
         log "Successfully configured LDAP directory service"
         
         # Set search base
         log "Setting LDAP search base to: $LDAP_BASE"
-        sudo dscl localhost -create "/LDAPv3/$ldap_host" "SearchBase" "$LDAP_BASE"
+        exec_log sudo dscl localhost -create "/LDAPv3/$ldap_host" "SearchBase" "$LDAP_BASE"
         
         log "LDAP directory service configured successfully"
         log "You can manage this configuration using:"
@@ -1013,19 +1090,244 @@ setup_macos_ldap() {
     fi
 }
 
+# Function to create backups before making changes
+create_backups() {
+    log "Creating backups of original configuration files to $BACKUP_DIR ..."
+    sudo mkdir -p "$BACKUP_DIR"
+    
+    # Backup SSH configuration
+    if [ -f "$SSH_CONF" ]; then
+        sudo cp "$SSH_CONF" "$BACKUP_DIR/sshd_config.backup"
+        log "Backed up SSH configuration"
+    fi
+    
+    # Backup PAM files
+    if [ -f "$PAM_SSHD" ]; then
+        sudo cp "$PAM_SSHD" "$BACKUP_DIR/pam_sshd.backup"
+        log "Backed up PAM SSHD configuration"
+    fi
+    
+    if [ -f "$PAM_SYSTEM_AUTH" ]; then
+        sudo cp "$PAM_SYSTEM_AUTH" "$BACKUP_DIR/pam_system_auth.backup"
+        log "Backed up PAM system-auth configuration"
+    fi
+    
+    # Backup NSS configuration
+    if [ -f "/etc/nsswitch.conf" ]; then
+        sudo cp "/etc/nsswitch.conf" "$BACKUP_DIR/nsswitch.conf.backup"
+        log "Backed up NSS configuration"
+    fi
+    
+    # Create undo info file
+    sudo tee "$BACKUP_DIR/undo_info.txt" > /dev/null <<EOF
+# LDAP Configuration Undo Information
+# Created: $(date)
+LDAP_URI=${LDAP_URI:-}
+LDAP_BASE=${LDAP_BASE:-}
+LDAP_ADMIN_DN=${LDAP_ADMIN_DN:-}
+CA_CERT=${CA_CERT:-}
+PACKAGE_MANAGER=${PACKAGE_MANAGER:-}
+EOF
+    
+    log "Backup completed in $BACKUP_DIR"
+}
+
+# Function to undo LDAP configuration
+undo_ldap_setup() {
+    log "Starting LDAP configuration undo..."
+    
+    if [ ! -d "$BACKUP_DIR" ]; then
+        log "Error: No backup directory found at $BACKUP_DIR"
+        log "Cannot undo without backups. Please run the script normally first."
+        exit 1
+    fi
+    
+    # Load undo information
+    if [ -f "$BACKUP_DIR/undo_info.txt" ]; then
+        source "$BACKUP_DIR/undo_info.txt"
+        log "Loaded configuration from backups"
+    fi
+    
+    # Detect current package manager
+    local current_pm=$(detect_package_manager)
+    
+    case $current_pm in
+        macos-native)
+            undo_macos_ldap
+            ;;
+        *)
+            undo_linux_ldap "$current_pm"
+            ;;
+    esac
+    
+    # Restore configuration files
+    restore_config_files
+    
+    # Remove environment file
+    if [ -f "$ENV_FILE" ]; then
+        exec_log sudo rm -f "$ENV_FILE"
+        log "Removed LDAP environment configuration"
+    fi
+    
+    log "LDAP configuration undo completed successfully"
+}
+
+# Function to undo macOS LDAP configuration
+undo_macos_ldap() {
+    log "Undoing macOS LDAP configuration..."
+    
+    # Parse LDAP URI if available
+    if [ -n "$LDAP_URI" ]; then
+        local ldap_host
+        if [[ "$LDAP_URI" =~ ^ldaps?://([^:]+) ]]; then
+            ldap_host="${BASH_REMATCH[1]}"
+            
+            # Remove LDAP directory configuration
+            if dscl localhost -list /LDAPv3 | grep -q "$ldap_host"; then
+                log "Removing LDAP directory: /LDAPv3/$ldap_host"
+                exec_log sudo dscl localhost -delete "/LDAPv3/$ldap_host" 2>/dev/null || log "LDAP directory already removed"
+            fi
+        fi
+    fi
+    
+    # Remove certificate from keychain if it exists
+    if [ -n "$CA_CERT" ] && [ -f "$CA_CERT" ]; then
+        local cert_name=$(openssl x509 -noout -subject -in "$CA_CERT" 2>/dev/null | sed -n 's/.*CN *= *\([^,]*\).*/\1/p')
+        if [ -n "$cert_name" ]; then
+            exec_log sudo security delete-certificate -c "$cert_name" /Library/Keychains/System.keychain 2>/dev/null || log "Certificate not found in keychain"
+            log "Removed certificate for $cert_name from keychain"
+        fi
+        exec_log sudo rm -f "$CA_CERT"
+    fi
+    
+    log "macOS LDAP configuration removed"
+}
+
+# Function to undo Linux LDAP configuration
+undo_linux_ldap() {
+    local package_manager=$1
+    log "Undoing Linux LDAP configuration for $package_manager..."
+    
+    # Stop and disable SSSD service
+    if systemctl is-active --quiet sssd 2>/dev/null; then
+        exec_log sudo systemctl stop sssd
+        log "Stopped SSSD service"
+    fi
+    
+    if systemctl is-enabled --quiet sssd 2>/dev/null; then
+        exec_log sudo systemctl disable sssd
+        log "Disabled SSSD service"
+    fi
+    
+    # Remove SSSD configuration
+    if [ -f "$SSSD_CONF" ]; then
+        exec_log sudo rm -f "$SSSD_CONF"
+        log "Removed SSSD configuration"
+    fi
+    
+    # Remove LDAP client configuration
+    if [ -f "/etc/ldap/ldap.conf" ]; then
+        exec_log sudo rm -f "/etc/ldap/ldap.conf"
+        log "Removed LDAP client configuration"
+    fi
+    
+    # Remove CA certificate
+    if [ -n "$CA_CERT" ] && [ -f "$CA_CERT" ]; then
+        exec_log sudo rm -f "$CA_CERT"
+        log "Removed LDAP CA certificate"
+        
+        # Update CA certificates
+        case $package_manager in
+            apt)
+                exec_log sudo rm -f /usr/local/share/ca-certificates/ldap-ca-cert.crt
+                exec_log sudo update-ca-certificates --fresh
+                ;;
+            yum|dnf)
+                exec_log sudo rm -f /etc/pki/ca-trust/source/anchors/ldap-ca-cert.pem
+                exec_log sudo update-ca-trust extract
+                ;;
+            pacman)
+                sudo update-ca-trust
+                ;;
+        esac
+    fi
+    
+    # Clear SSSD cache
+    exec_log sudo rm -rf /var/lib/sss/db/* 2>/dev/null || true
+    
+    log "Linux LDAP configuration removed"
+}
+
+# Function to restore original configuration files
+restore_config_files() {
+    log "Restoring original configuration files..."
+    
+    # Restore SSH configuration
+    if [ -f "$BACKUP_DIR/sshd_config.backup" ]; then
+        sudo cp "$BACKUP_DIR/sshd_config.backup" "$SSH_CONF"
+        log "Restored SSH configuration"
+        
+        # Restart SSH service
+        local package_manager=$(detect_package_manager)
+        if [ "$package_manager" = "macos-native" ]; then
+            exec_log sudo launchctl unload /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
+            exec_log sudo launchctl load /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
+        else
+            local service_name="ssh"
+            [[ "$package_manager" =~ ^(yum|pacman|dnf)$ ]] && service_name="sshd"
+            exec_log sudo systemctl restart "$service_name" 2>/dev/null || log "Could not restart SSH service"
+        fi
+    fi
+    
+    # Restore PAM configurations
+    if [ -f "$BACKUP_DIR/pam_sshd.backup" ]; then
+        sudo cp "$BACKUP_DIR/pam_sshd.backup" "$PAM_SSHD"
+        log "Restored PAM SSHD configuration"
+    fi
+    
+    if [ -f "$BACKUP_DIR/pam_system_auth.backup" ]; then
+        sudo cp "$BACKUP_DIR/pam_system_auth.backup" "$PAM_SYSTEM_AUTH"
+        log "Restored PAM system-auth configuration"
+    fi
+    
+    # Restore NSS configuration
+    if [ -f "$BACKUP_DIR/nsswitch.conf.backup" ]; then
+        sudo cp "$BACKUP_DIR/nsswitch.conf.backup" "/etc/nsswitch.conf"
+        log "Restored NSS configuration"
+    fi
+    
+    # Remove sudo access file
+    if [ -f "/etc/sudoers.d/proxmox-sudo" ]; then
+        exec_log sudo rm -f "/etc/sudoers.d/proxmox-sudo"
+        log "Removed LDAP sudo access configuration"
+    fi
+}
+
 # Main execution
 main() {
+    # Handle undo mode
+    echo 
+    if [ "$UNDO_MODE" = true ]; then
+        log "Starting LDAP configuration undo..."
+        undo_ldap_setup
+        return 0
+    fi
+    
     log "Starting system setup..."
     
     # Get domain from command line argument if provided
-    local provided_domain="$1"
+    local provided_domain="$DOMAIN_ARG"
     
     # Check for .env file and prompt if missing
     if [ ! -f "$ENV_FILE" ]; then
+        log "Environment file $ENV_FILE not found. Starting interactive configuration..."
         prompt_for_env_vars "$provided_domain"
         confirm_configuration
     else
         log "Loading environment variables from $ENV_FILE..."
+        log "Environment file contents:"
+        cat "$ENV_FILE" | while read line; do log "  $line"; done
+        log "Loaded variables: LDAP_URI='$LDAP_URI' LDAP_BASE='$LDAP_BASE' LDAP_ADMIN_DN='$LDAP_ADMIN_DN'"
     fi
     
     # Detect system configuration
@@ -1033,6 +1335,9 @@ main() {
     OS_VERSION=$(detect_os_version)
     log "Detected package manager: $PACKAGE_MANAGER"
     log "Detected OS version: $OS_VERSION"
+    
+    # Create backups before making changes
+    create_backups
     
     # Install necessary packages
     install_packages "$PACKAGE_MANAGER"
@@ -1047,11 +1352,11 @@ main() {
     
     # Additional setup for specific distributions
     if [ "$PACKAGE_MANAGER" = "pacman" ]; then
-        sudo systemctl enable --now sssd
-        sudo systemctl enable --now sshd
-        sudo sss_cache -E
-        sudo rm -rf /var/lib/sss/db/*
-        sudo systemctl restart sssd
+        exec_log sudo systemctl enable --now sssd
+        exec_log sudo systemctl enable --now sshd
+        exec_log sudo sss_cache -E
+        exec_log sudo rm -rf /var/lib/sss/db/*
+        exec_log sudo systemctl restart sssd
     elif [ "$PACKAGE_MANAGER" = "macos-native" ]; then
         setup_macos_ldap
         log "macOS setup complete. LDAP directory service configured."
@@ -1061,5 +1366,5 @@ main() {
     log "Setup completed successfully."
 }
 
-# Execute main function with command line arguments
-main "$@"
+# Execute main function
+main

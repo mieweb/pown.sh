@@ -6,10 +6,11 @@ This project automates LDAP client setup across various Linux distributions (Deb
 
 * **Interactive Setup**: Automatically prompts for LDAP configuration if no `.env` file exists
 * **Smart Domain Detection**: Auto-generates LDAP Base DN from system hostname  
-* **Cross-distro Support**: Works with `apt`, `yum`, `dnf`, and `pacman` package managers
+* **Cross-distro Support**: Works with `apt`, `yum`, `dnf`, and `pacman` package managers, plus native macOS support
 * **Secure SSH Configuration**: Sets up SSH with secure defaults and PAM integration
-* **SSSD Integration**: Complete SSSD setup for LDAP authentication
+* **SSSD Integration**: Complete SSSD setup for LDAP authentication (Linux) or native Directory Services (macOS)
 * **TLS Certificate Handling**: Automated CA certificate installation and trust setup
+* **Undo Capability**: Safely remove LDAP configuration and restore original system settings
 * **Global CDN Distribution**: Available via Cloudflare Workers for fast worldwide access
 
 ## Quick Start
@@ -26,6 +27,16 @@ curl -s https://pown.sh | sudo bash
 ```bash
 # Pass domain as command line argument (skips domain prompt)
 curl -s https://pown.sh | sudo bash -s -- example.com
+```
+
+### Undo Configuration
+
+```bash
+# Remove LDAP configuration and restore original settings
+curl -s https://pown.sh | sudo bash -s -- --undo
+
+# Or if you have the script locally
+sudo ./pown.sh --undo
 ```
 
 
