@@ -1,27 +1,441 @@
 #!/bin/bash
 
 # Exit immediately if a command exits with a non-zero status
-set -e
+set -e #x  #add x for debugging
+
+# Error trap to capture failures
+error_exit() {
+    local exit_code=$?
+    local line_number=$1
+    log "ERROR: Command failed at line $line_number with exit code $exit_code"
+    log "ERROR: Last command that failed: ${BASH_COMMAND}"
+    exit $exit_code
+}
+
+# Set up error trap
+trap 'error_exit $LINENO' ERR
+
+# Check if running as root, if not re-execute with sudo
+check_root_privileges() {
+    if [ "$EUID" -ne 0 ]; then
+        # Check if running from pipe (curl | bash)
+        if [ ! -t 0 ] || [[ "$0" == "bash" ]] || [[ "$0" == "/bin/bash" ]] || [[ "$0" == "/usr/bin/bash" ]]; then
+            echo "ERROR: This script requires root privileges."
+            echo "Please run with sudo:"
+            echo "  curl -s https://pown.sh | sudo bash -s -- $*"
+            exit 1
+        else
+            echo "Script requires root privileges. Re-executing with sudo..."  # cant use log yet
+            exec sudo "$0" "$@"
+        fi
+    fi
+}
+
+# Check root privileges first
+check_root_privileges "$@"
 
 # Load environment variables
 [ -f .env ] && export $(grep -v '^#' .env | xargs)
 
 # Configuration variables
+readonly LOGFILE="/etc/pown.sh.setup.log"
 readonly SSSD_CONF="/etc/sssd/sssd.conf"
 readonly SSH_CONF="/etc/ssh/sshd_config"
 readonly PAM_SSHD="/etc/pam.d/sshd"
 readonly PAM_SYSTEM_AUTH="/etc/pam.d/system-auth"
 
-# Package lists for different package managers
-declare -A PACKAGES
-PACKAGES[apt]="ldap-utils openssh-client openssh-server sssd sssd-ldap sudo libnss-sss libpam-sss ca-certificates vim net-tools iputils-ping"
-PACKAGES[yum]="openssh-clients openssh-server sssd sssd-ldap sudo openldap-clients ca-certificates vim net-tools iputils authselect authconfig"
-PACKAGES[pacman]="openssh sssd openldap sudo ca-certificates vim net-tools iputils pam pambase"
-PACKAGES[dnf]="openssh-clients openssh-server sssd sssd-ldap sudo openldap-clients ca-certificates vim net-tools iputils authselect authconfig"
+# Function to get packages for package manager
+get_packages() {
+    local pm=$1
+    case $pm in
+        apt)
+            echo "ldap-utils openssh-client openssh-server sssd sssd-ldap sudo libnss-sss libpam-sss ca-certificates vim net-tools iputils-ping dnsutils"
+            ;;
+        yum)
+            echo "openssh-clients openssh-server sssd sssd-ldap sudo openldap-clients ca-certificates vim net-tools iputils authselect authconfig bind-utils"
+            ;;
+        pacman)
+            echo "openssh sssd openldap sudo ca-certificates vim net-tools iputils pam pambase bind"
+            ;;
+        dnf)
+            echo "openssh-clients openssh-server sssd sssd-ldap sudo openldap-clients ca-certificates vim net-tools iputils authselect authconfig bind-utils"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
 
 # Function to log messages
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >&2
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> $LOGFILE
+}
+
+# Function to generate LDAP_BASE from domain
+generate_ldap_base_from_domain() {
+    local domain=$1
+    # Convert domain to LDAP DN format (example.com -> dc=example,dc=com)
+    echo "$domain" | sed 's/\./,dc=/g' | sed 's/^/dc=/'
+}
+
+# Function to ensure DNS tools are available
+ensure_dns_tools() {
+    if command -v dig >/dev/null 2>&1 || command -v nslookup >/dev/null 2>&1; then
+        return 0
+    fi
+    
+    log "DNS tools not found. Installing..."
+    local package_manager=$(detect_package_manager)
+    
+    case $package_manager in
+        apt)
+            sudo apt-get update && sudo apt-get install -y dnsutils
+            ;;
+        yum)
+            sudo yum install -y bind-utils
+            ;;
+        dnf)
+            sudo dnf install -y bind-utils
+            ;;
+        pacman)
+            sudo pacman -S --noconfirm bind
+            ;;
+        *)
+            log "Warning: Could not install DNS tools for package manager: $package_manager"
+            return 1
+            ;;
+    esac
+}
+
+# Function to perform SRV record lookup with fallbacks
+lookup_srv_records() {
+    local service=$1
+    local domain=$2
+    local srv_query="${service}.${domain}"
+    
+    if command -v dig >/dev/null 2>&1; then
+        dig +short "$srv_query" SRV 2>/dev/null
+    elif command -v nslookup >/dev/null 2>&1; then
+        nslookup -type=SRV "$srv_query" 2>/dev/null | grep -E '^[^;].*SRV' | awk '{print $5, $6, $7, $8}' | sed 's/\.$//'
+    else
+        log "Warning: No DNS tools available for SRV lookup"
+        return 1
+    fi
+}
+
+# Function to test if a host/port combination is reachable
+test_ldap_port() {
+    local host=$1
+    local port=$2
+    local timeout=3
+    
+    # Use nc (netcat) or timeout+bash to test connectivity
+    if command -v nc >/dev/null 2>&1; then
+        nc -z -w "$timeout" "$host" "$port" >/dev/null 2>&1
+    elif command -v timeout >/dev/null 2>&1; then
+        timeout "$timeout" bash -c "</dev/tcp/$host/$port" >/dev/null 2>&1
+    else
+        # Fallback: try to connect with bash
+        bash -c "</dev/tcp/$host/$port" >/dev/null 2>&1
+    fi
+}
+
+# Function to extract CA certificate from LDAP server
+extract_ca_certificate() {
+    local ldap_uri=$1
+    local host port
+    
+    # Parse the LDAP URI to extract host and port
+    if [[ "$ldap_uri" =~ ^ldaps?://([^:]+):?([0-9]+)?$ ]]; then
+        host="${BASH_REMATCH[1]}"
+        port="${BASH_REMATCH[2]}"
+        
+        # Default ports if not specified
+        if [ -z "$port" ]; then
+            if [[ "$ldap_uri" =~ ^ldaps:// ]]; then
+                port=636
+            else
+                port=389
+            fi
+        fi
+    else
+        log "Warning: Could not parse LDAP URI: $ldap_uri"
+        return 1
+    fi
+    
+    # Only try to extract certificate for LDAPS connections
+    if [[ "$ldap_uri" =~ ^ldaps:// ]]; then
+        log "Attempting to extract CA certificate from $host:$port..."
+        
+        # Check if openssl is available
+        if ! command -v openssl >/dev/null 2>&1; then
+            log "Warning: openssl not available, cannot extract certificate automatically"
+            return 1
+        fi
+        
+        # Extract the certificate
+        local cert_content
+        cert_content=$(echo | timeout 10 openssl s_client -connect "$host:$port" -showcerts 2>/dev/null | \
+                      sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' | \
+                      head -n -0)  # Get all certificates, not just the first one
+        
+        if [ -n "$cert_content" ]; then
+            # Get the last certificate (usually the CA certificate)
+            local ca_cert
+            ca_cert=$(echo "$cert_content" | awk '/-----BEGIN CERTIFICATE-----/{cert=""} {cert=cert $0 "\n"} /-----END CERTIFICATE-----/{print cert}' | tail -1)
+            
+            if [ -n "$ca_cert" ]; then
+                log "Successfully extracted CA certificate from server"
+                echo "$ca_cert"
+                return 0
+            fi
+        fi
+        
+        log "Warning: Could not extract certificate from $host:$port"
+        return 1
+    else
+        log "LDAP connection (non-TLS), no certificate extraction needed"
+        return 1
+    fi
+}
+
+# Function to discover LDAP servers - separates host discovery from port testing
+discover_ldap_server() {
+    local domain=$1
+    local discovered_hosts=()
+    local ldap_uri=""
+    
+    log "Discovering LDAP server for domain: $domain"
+    
+    # Ensure DNS tools are available
+    ensure_dns_tools
+    
+    # Step 1: Collect all potential LDAP hosts from SRV records
+    log "Checking DNS SRV records..."
+    
+    # Try LDAPS SRV records (port 636)
+    local srv_records=$(lookup_srv_records "_ldaps._tcp" "$domain")
+    if [ -n "$srv_records" ]; then
+        while IFS= read -r srv_record; do
+            if [ -n "$srv_record" ]; then
+                local priority=$(echo "$srv_record" | awk '{print $1}')
+                local weight=$(echo "$srv_record" | awk '{print $2}')
+                local port=$(echo "$srv_record" | awk '{print $3}')
+                local target=$(echo "$srv_record" | awk '{print $4}' | sed 's/\.$//')
+                discovered_hosts+=("$target:$port:ldaps")
+                log "Found LDAPS SRV record: $target:$port"
+            fi
+        done <<< "$srv_records"
+    fi
+    
+    # Try LDAP SRV records (port 389)
+    srv_records=$(lookup_srv_records "_ldap._tcp" "$domain")
+    if [ -n "$srv_records" ]; then
+        while IFS= read -r srv_record; do
+            if [ -n "$srv_record" ]; then
+                local priority=$(echo "$srv_record" | awk '{print $1}')
+                local weight=$(echo "$srv_record" | awk '{print $2}')
+                local port=$(echo "$srv_record" | awk '{print $3}')
+                local target=$(echo "$srv_record" | awk '{print $4}' | sed 's/\.$//')
+                discovered_hosts+=("$target:$port:ldap")
+                log "Found LDAP SRV record: $target:$port"
+            fi
+        done <<< "$srv_records"
+    fi
+    
+    # Step 2: Add common hostname patterns to test
+    log "Adding common hostname patterns..."
+    local common_hostnames=("ldap" "ad" "dc" "directory" "ds" "openldap")
+    for hostname in "${common_hostnames[@]}"; do
+        if nslookup "$hostname.$domain" >/dev/null 2>&1; then
+            discovered_hosts+=("$hostname.$domain:636:ldaps")
+            discovered_hosts+=("$hostname.$domain:389:ldap")
+            log "Found hostname: $hostname.$domain"
+        fi
+    done
+    
+    # Step 3: Add localhost as final fallback
+    log "Adding localhost as fallback..."
+    local system_hostname=$(hostname -f 2>/dev/null || hostname)
+    discovered_hosts+=("localhost:636:ldaps")
+    discovered_hosts+=("localhost:389:ldap")
+    discovered_hosts+=("127.0.0.1:636:ldaps")
+    discovered_hosts+=("127.0.0.1:389:ldap")
+    
+    # Step 4: Test connectivity to discovered hosts
+    log "Testing connectivity to discovered hosts..."
+    for host_entry in "${discovered_hosts[@]}"; do
+        IFS=':' read -r host port protocol <<< "$host_entry"
+        log "Testing $protocol://$host:$port..."
+        
+        if test_ldap_port "$host" "$port"; then
+            # If we found localhost, use the system hostname for the URI
+            if [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
+                ldap_uri="$protocol://$system_hostname:$port"
+                log "Found local LDAP server, using system hostname: $ldap_uri"
+            else
+                ldap_uri="$protocol://$host:$port"
+                log "Successfully connected to: $ldap_uri"
+            fi
+            echo "$ldap_uri"
+            return 0
+        else
+            log "Failed to connect to: $protocol://$host:$port"
+        fi
+    done
+    
+    # No working LDAP server found
+    log "Could not auto-discover LDAP server for domain: $domain"
+    echo ""
+    return 1
+}
+
+# Function to prompt for environment variables  
+prompt_for_env_vars() {
+    local provided_domain="$1"
+    
+    # Use provided domain or prompt for one
+    if [ -n "$provided_domain" ]; then
+        domain="$provided_domain"
+        log "Using domain from command line: $domain"
+    else
+        # Get domain from user
+        local hostname=$(hostname -f 2>/dev/null || hostname)
+        log "Detected hostname: $hostname"
+        local default_domain=""
+        if [[ "$hostname" == *.* ]]; then
+            default_domain=${hostname#*.}
+        fi
+        
+        if [ -n "$default_domain" ]; then
+            read -p "Domain name [$default_domain]: " domain
+            domain=${domain:-$default_domain}
+        else
+            read -p "Domain name (e.g., example.com): " domain
+        fi
+        
+        # Validate that domain is not empty
+        if [ -z "$domain" ]; then
+            log "Error: Domain name is required. Exiting."
+            exit 1
+        fi
+    fi
+    
+    # Auto-discover LDAP server
+    LDAP_URI=$(discover_ldap_server "$domain") || true
+    
+    if [ -z "$LDAP_URI" ]; then
+        echo
+        echo "⚠️  ALERT: Could not auto-discover LDAP server for domain: $domain"
+        echo "   - No DNS SRV records found (_ldaps._tcp.$domain or _ldap._tcp.$domain)"
+        echo "   - No common LDAP hostnames found (ldap.$domain, ad.$domain, etc.)"
+        echo
+        echo "Please provide the LDAP server information manually."
+        echo
+        read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
+        
+        # Validate that LDAP_URI is not empty
+        while [ -z "$LDAP_URI" ]; do
+            echo "Error: LDAP Server URI is required."
+            read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
+        done
+    else
+        echo "✅ Auto-discovered LDAP server: $LDAP_URI"
+        read -p "Use this server? (Y/n): " use_discovered
+        if [[ "$use_discovered" =~ ^[Nn]$ ]]; then
+            read -p "Please enter LDAP Server URI manually: " LDAP_URI
+            
+            # Validate manual entry
+            while [ -z "$LDAP_URI" ]; do
+                echo "Error: LDAP Server URI is required."
+                read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
+            done
+        fi
+    fi
+    
+    # Generate LDAP_BASE from domain
+    local default_ldap_base=$(generate_ldap_base_from_domain "$domain")
+    read -p "LDAP Base DN [$default_ldap_base]: " LDAP_BASE
+    LDAP_BASE=${LDAP_BASE:-$default_ldap_base}
+    
+    read -p "LDAP Admin DN (e.g., cn=admin,$LDAP_BASE): " LDAP_ADMIN_DN
+    
+    # Set CA certificate path to our standard location
+    CA_CERT="/certificates/ca-cert.pem"
+    
+    # Try to automatically extract CA certificate from LDAP server
+    log "Attempting to extract CA certificate from LDAP server..."
+    EXTRACTED_CERT=$(extract_ca_certificate "$LDAP_URI")
+    
+    if [ -n "$EXTRACTED_CERT" ]; then
+        log "✅ Successfully extracted CA certificate from server!"
+        log "Certificate preview:"
+        echo "$EXTRACTED_CERT" | head -3
+        echo "... [certificate content] ..."
+        echo "$EXTRACTED_CERT" | tail -3
+        echo
+        read -p "Use this extracted certificate? (Y/n): " use_extracted
+        
+        if [[ ! "$use_extracted" =~ ^[Nn]$ ]]; then
+            CA_CERT_CONTENT="$EXTRACTED_CERT"
+            log "Using extracted CA certificate"
+        else
+            log "User chose to provide CA certificate manually"
+            log "Please provide the CA certificate content (paste the entire certificate):"
+            log "Press Ctrl+D when finished:"
+            CA_CERT_CONTENT=$(cat)
+        fi
+    else
+        log "⚠️  Could not automatically extract CA certificate"
+        log "You can extract it manually with: openssl s_client -connect ${LDAP_URI#*://} -showcerts </dev/null"
+        log "Please provide the CA certificate content (paste the entire certificate):"
+        log "Press Ctrl+D when finished:"
+        CA_CERT_CONTENT=$(cat)
+    fi
+    
+    # Export the variables for use in the current session
+    export LDAP_URI LDAP_BASE LDAP_ADMIN_DN CA_CERT CA_CERT_CONTENT
+}
+
+# Function to display configuration and confirm with user
+confirm_configuration() {
+    echo
+    echo "========================================"
+    echo "LDAP Configuration Summary:"
+    echo "========================================"
+    echo "LDAP URI:        $LDAP_URI"
+    echo "LDAP Base DN:    $LDAP_BASE"
+    echo "LDAP Admin DN:   $LDAP_ADMIN_DN"
+    echo "CA Certificate:  $CA_CERT"
+    echo "CA Cert Content: $(echo "$CA_CERT_CONTENT" | head -1)..."
+    echo "========================================"
+    echo
+    
+    read -p "Do you want to proceed with this configuration? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        log "Configuration cancelled by user."
+        exit 0
+    fi
+    
+    # Save configuration to .env file
+    save_env_file
+}
+
+# Function to save environment variables to .env file
+save_env_file() {
+    log "Saving configuration to .env file..."
+    cat > .env <<EOF
+# LDAP Configuration
+LDAP_URI=$LDAP_URI
+LDAP_BASE=$LDAP_BASE
+LDAP_ADMIN_DN=$LDAP_ADMIN_DN
+
+# CA Certificate Content (multi-line)
+CA_CERT_CONTENT="$CA_CERT_CONTENT"
+EOF
+    
+    log ".env file created successfully."
 }
 
 # Function to detect package manager
@@ -55,27 +469,28 @@ detect_os_version() {
 # Function to install packages based on package manager
 install_packages() {
     local package_manager=$1
+    local packages=$(get_packages "$package_manager")
     log "Installing packages with $package_manager..."
     
     case $package_manager in
         apt)
             export DEBIAN_FRONTEND=noninteractive
             sudo apt-get update
-            sudo apt-get install -y ${PACKAGES[apt]}
+            sudo apt-get install -y $packages
             sudo rm -rf /var/lib/apt/lists/*
             unset DEBIAN_FRONTEND
             ;;
         yum)
-            sudo yum install -y ${PACKAGES[yum]}
+            sudo yum install -y $packages
             ;;
         dnf)
-           sudo dnf install -y ${PACKAGES[dnf]}
+           sudo dnf install -y $packages
            ;;
         pacman)
             setup_pacman_keyring
             sudo pacman -Syy --noconfirm
             printf 'y\n' | sudo pacman -S --needed base-devel
-            for package in ${PACKAGES[pacman]}; do
+            for package in $packages; do
                 sudo pacman -S --noconfirm --needed "$package"
             done
             sudo pacman -Sc --noconfirm
@@ -109,23 +524,26 @@ setup_ssh() {
 }
 
 configure_ssh_authentication() {
-    # Define desired SSH configuration as key-value pairs
-    declare -A ssh_config=(
-        ["PasswordAuthentication"]="yes"
-        ["PermitRootLogin"]="yes"
-        ["PubkeyAuthentication"]="yes"
-        ["UsePAM"]="yes"
-        ["KbdInteractiveAuthentication"]="yes"
-        ["Port"]="22"
-        ["Protocol"]="2"
+    # Define SSH configuration settings
+    local ssh_settings=(
+        "PasswordAuthentication yes"
+        "PermitRootLogin yes"
+        "PubkeyAuthentication yes"
+        "UsePAM yes"
+        "KbdInteractiveAuthentication yes"
+        "Port 22"
+        "Protocol 2"
     )
 
-    # Iterate through each configuration and update or add it
-    for key in "${!ssh_config[@]}"; do
+    # Apply each configuration setting
+    for setting in "${ssh_settings[@]}"; do
+        local key=$(echo "$setting" | cut -d' ' -f1)
+        local value=$(echo "$setting" | cut -d' ' -f2-)
+        
         if sudo grep -q "^$key" "$SSH_CONF"; then
-            sudo sed -i "s/^$key .*/$key ${ssh_config[$key]}/" "$SSH_CONF"
+            sudo sed -i "s/^$key .*/$key $value/" "$SSH_CONF"
         else
-            echo "$key ${ssh_config[$key]}" | sudo tee -a "$SSH_CONF" > /dev/null
+            echo "$key $value" | sudo tee -a "$SSH_CONF" > /dev/null
         fi
     done
 }
@@ -314,6 +732,17 @@ configure_sudo_access() {
 main() {
     log "Starting system setup..."
     
+    # Get domain from command line argument if provided
+    local provided_domain="$1"
+    
+    # Check for .env file and prompt if missing
+    if [ ! -f .env ]; then
+        prompt_for_env_vars "$provided_domain"
+        confirm_configuration
+    else
+        log "Loading environment variables from .env file..."
+    fi
+    
     # Detect system configuration
     PACKAGE_MANAGER=$(detect_package_manager)
     OS_VERSION=$(detect_os_version)
@@ -343,5 +772,5 @@ main() {
     log "Setup completed successfully."
 }
 
-# Execute main function
-main
+# Execute main function with command line arguments
+main "$@"
