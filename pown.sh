@@ -1174,8 +1174,6 @@ undo_ldap_setup() {
 
 # Function to undo macOS LDAP configuration
 undo_macos_ldap() {
-    log "Undoing macOS LDAP configuration..."
-    
     # Parse LDAP URI if available
     if [ -n "$LDAP_URI" ]; then
         local ldap_host
@@ -1198,9 +1196,7 @@ undo_macos_ldap() {
             log "Removed certificate for $cert_name from keychain"
         fi
         exec_log sudo rm -f "$CA_CERT"
-    fi
-    
-    log "macOS LDAP configuration removed"
+    fi    
 }
 
 # Function to undo Linux LDAP configuration
@@ -1260,11 +1256,9 @@ undo_linux_ldap() {
 
 # Function to restore original configuration files
 restore_config_files() {
-    log "Restoring original configuration files..."
-    
     # Restore SSH configuration
     if [ -f "$BACKUP_DIR/sshd_config.backup" ]; then
-        sudo cp "$BACKUP_DIR/sshd_config.backup" "$SSH_CONF"
+        exec_log sudo cp "$BACKUP_DIR/sshd_config.backup" "$SSH_CONF"
         log "Restored SSH configuration"
         
         # Restart SSH service
