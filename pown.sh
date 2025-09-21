@@ -599,13 +599,35 @@ prompt_for_env_vars() {
     read -p "LDAP Admin DN [$default_admin_dn]: " LDAP_ADMIN_DN
     LDAP_ADMIN_DN=${LDAP_ADMIN_DN:-$default_admin_dn}
     
+    # Ask about SSH configuration
+    log ""
+    log "SSH Configuration:"
+    if is_ssh_enabled; then
+        log "SSH service is currently enabled."
+        read -p "Configure SSH for LDAP authentication? (Y/n): " configure_ssh
+        if [[ "$configure_ssh" =~ ^[Nn]$ ]]; then
+            FORCE_SSHD="false"
+        else
+            FORCE_SSHD="true"
+        fi
+    else
+        log "SSH service is currently disabled."
+        read -p "Force SSH configuration anyway? (y/N): " force_ssh
+        if [[ "$force_ssh" =~ ^[Yy]$ ]]; then
+            FORCE_SSHD="true"
+            log "Warning: SSH will be configured but not enabled. You'll need to enable it manually."
+        else
+            FORCE_SSHD="false"
+        fi
+    fi
+    
     # Set CA_CERT path for display
     if [ -z "$CA_CERT" ]; then
         CA_CERT=$(get_ca_cert_path)
     fi
     
     # Export the variables for use in the current session
-    export LDAP_URI LDAP_BASE LDAP_ADMIN_DN CA_CERT
+    export LDAP_URI LDAP_BASE LDAP_ADMIN_DN FORCE_SSHD CA_CERT
 }
 
 # Function to display configuration and confirm with user
@@ -618,7 +640,8 @@ confirm_configuration() {
     log "LDAP Base DN:    $LDAP_BASE"
     log "LDAP Admin DN:   $LDAP_ADMIN_DN"
     log "CA Certificate:  $CA_CERT"
-    log "========================================"
+    log "SSH Config:      $([[ "$FORCE_SSHD" == "true" ]] && echo "Enabled" || echo "Disabled")"
+    log "========================================="
     log ""
     
     read -p "Do you want to proceed with this configuration? (y/N): " confirm
@@ -639,6 +662,9 @@ save_env_file() {
 LDAP_URI=$LDAP_URI
 LDAP_BASE=$LDAP_BASE
 LDAP_ADMIN_DN=$LDAP_ADMIN_DN
+
+# SSH Configuration
+FORCE_SSHD=$FORCE_SSHD
 EOF
     
     log "Configuration file $ENV_FILE created successfully."
@@ -724,25 +750,90 @@ setup_pacman_keyring() {
     sudo pacman-key --populate archlinux
 }
 
+# Function to check if SSH service is enabled
+is_ssh_enabled() {
+    if [ "$PACKAGE_MANAGER" = "macos-native" ]; then
+        # On macOS, check if SSH is enabled in System Preferences
+        sudo systemsetup -getremotelogin 2>/dev/null | grep -q "On"
+    else
+        local service_name="ssh"
+        [[ "$PACKAGE_MANAGER" =~ ^(yum|pacman|dnf)$ ]] && service_name="sshd"
+        
+        systemctl is-enabled "$service_name" >/dev/null 2>&1
+    fi
+}
+
 # Function to set up SSH
 setup_ssh() {
-    log "Setting up SSH..."
+    log "Checking SSH service status..."
+    
+    # Check if SSH configuration is forced
+    if [[ "$FORCE_SSHD" == "false" ]]; then
+        log "SSH configuration is disabled by user preference (FORCE_SSHD=false). Skipping SSH setup."
+        return 0
+    fi
+    
+    local ssh_enabled=false
+    if is_ssh_enabled; then
+        ssh_enabled=true
+    fi
+    
+    if [[ "$FORCE_SSHD" == "true" ]]; then
+        if [ "$ssh_enabled" = true ]; then
+            log "SSH service is enabled. Configuring SSH for LDAP authentication..."
+        else
+            log "SSH service is disabled, but FORCE_SSHD=true. Configuring SSH anyway..."
+            log "Warning: You'll need to enable SSH manually after configuration:"
+            if [ "$PACKAGE_MANAGER" = "macos-native" ]; then
+                log "  - System Preferences > Sharing > Remote Login"
+                log "  - Or: sudo systemsetup -setremotelogin on"
+            else
+                local service_name="ssh"
+                [[ "$PACKAGE_MANAGER" =~ ^(yum|pacman|dnf)$ ]] && service_name="sshd"
+                log "  - sudo systemctl enable $service_name"
+                log "  - sudo systemctl start $service_name"
+            fi
+        fi
+    else
+        # FORCE_SSHD is not set, use default behavior
+        if ! is_ssh_enabled; then
+            log "SSH service is not enabled. Skipping SSH configuration to avoid unwanted exposure."
+            log "If you want to enable SSH, please do so manually:"
+            if [ "$PACKAGE_MANAGER" = "macos-native" ]; then
+                log "  - System Preferences > Sharing > Remote Login"
+                log "  - Or: sudo systemsetup -setremotelogin on"
+            else
+                local service_name="ssh"
+                [[ "$PACKAGE_MANAGER" =~ ^(yum|pacman|dnf)$ ]] && service_name="sshd"
+                log "  - sudo systemctl enable $service_name"
+                log "  - sudo systemctl start $service_name"
+            fi
+            return 0
+        fi
+        
+        log "SSH service is enabled. Configuring SSH for LDAP authentication..."
+    fi
+    
     sudo mkdir -p /var/run/sshd
     
     # Configure SSH
     configure_ssh_authentication
     generate_ssh_keys
     
-    # Start and enable SSH service
-    if [ "$PACKAGE_MANAGER" = "macos-native" ]; then
-        # macOS uses launchctl for service management
-        exec_log sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || log "SSH service already running or not available"
+    # Restart SSH service to apply changes (only if it's currently enabled)
+    if [ "$ssh_enabled" = true ]; then
+        if [ "$PACKAGE_MANAGER" = "macos-native" ]; then
+            # macOS uses launchctl for service management
+            exec_log sudo launchctl unload /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
+            exec_log sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || log "SSH service restart failed"
+        else
+            local service_name="ssh"
+            [[ "$PACKAGE_MANAGER" =~ ^(yum|pacman|dnf)$ ]] && service_name="sshd"
+            
+            exec_log sudo systemctl restart "$service_name"
+        fi
     else
-        local service_name="ssh"
-        [[ "$PACKAGE_MANAGER" =~ ^(yum|pacman|dnf)$ ]] && service_name="sshd"
-        
-        exec_log sudo systemctl enable "$service_name"
-        exec_log sudo systemctl restart "$service_name"
+        log "SSH service is disabled - configuration applied but service not restarted."
     fi
 }
 
