@@ -17,15 +17,15 @@ This project automates LDAP client setup across various Linux distributions (Deb
 ### Interactive Setup
 
 ```bash
-# Download and run directly
-curl -s https://pown.sh | bash
+# Download and run directly (requires sudo for system configuration)
+curl -s https://pown.sh | sudo bash
 ```
 
 ### Non-Interactive with Domain
 
 ```bash
 # Pass domain as command line argument (skips domain prompt)
-curl -s https://pown.sh | bash -s -- example.com
+curl -s https://pown.sh | sudo bash -s -- example.com
 ```
 
 
