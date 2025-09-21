@@ -1,5 +1,6 @@
 ## Code Quality Principles
-- Use log instead of echo for messages
+- Use "log()" function instead of "echo" for anything that a user should see
+- Use "exec_log()" function to log and execute commands that change system state
 
 ### 🎯 DRY (Don't Repeat Yourself)
 - **Never duplicate code**: If you find yourself copying code, extract it into a reusable function
