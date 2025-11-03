@@ -1168,8 +1168,10 @@ create_sssd_config() {
         log "Using system CA certificates, no custom cert path needed"
     fi
     
-    # Build SSSD config with conditional CA cert line
-    cat > /tmp/sssd_conf_$$ <<EOL
+    # Build SSSD config with conditional CA cert line using secure temp file
+    local temp_conf
+    temp_conf=$(mktemp /tmp/sssd_conf.XXXXXX)
+    cat > "$temp_conf" <<EOL
 [sssd]
 domains = LDAP
 config_file_version = 2
@@ -1194,10 +1196,10 @@ EOL
 
     # Add CA cert line only if needed
     if [ -n "$tls_cacert_line" ]; then
-        echo "$tls_cacert_line" >> /tmp/sssd_conf_$$
+        echo "$tls_cacert_line" >> "$temp_conf"
     fi
     
-    cat >> /tmp/sssd_conf_$$ <<EOL
+    cat >> "$temp_conf" <<EOL
 ldap_tls_reqcert = ${tls_reqcert}
 ldap_id_use_start_tls = ${use_start_tls}
 ldap_schema = rfc2307
@@ -1221,7 +1223,7 @@ pam_pwd_response_timeout = 30
 
 EOL
 
-    sudo mv /tmp/sssd_conf_$$ "$SSSD_CONF"
+    sudo mv "$temp_conf" "$SSSD_CONF"
     sudo chmod 600 "$SSSD_CONF"
     
     log "SSSD configuration created with TLS settings:"

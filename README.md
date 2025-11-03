@@ -97,11 +97,11 @@ The script automatically detects and configures the most secure TLS option avail
 
 ### Example Output
 ```
-[2024-01-20 10:30:15] Testing LDAP server TLS capabilities...
-[2024-01-20 10:30:16] ✓ LDAPS connection successful on port 636
-[2024-01-20 10:30:16] ✓ Server certificate validated with system CA store
-[2024-01-20 10:30:16] Using LDAPS with existing system certificates
-[2024-01-20 10:30:16] TLS configuration: ENABLED
+Testing LDAP server TLS capabilities...
+✓ LDAPS connection successful on port 636
+✓ Server certificate validated with system CA store
+Using LDAPS with existing system certificates
+TLS configuration: ENABLED
 ```
 
 ### Manual `.env` Configuration
