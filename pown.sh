@@ -290,13 +290,17 @@ detect_ldap_tls_support() {
             echo "ldaps://$host:636|system_ca|true"
             return 0
         else
-            # Check if we can get a certificate (self-signed or custom CA)
-            if echo "Q" | timeout 5 openssl s_client -connect "$host:636" 2>/dev/null | grep -q "BEGIN CERTIFICATE"; then
+            # Check if we can establish TLS connection and get a certificate
+            # Look for both successful connection and certificate presence
+            local openssl_output
+            openssl_output=$(echo "Q" | timeout 5 openssl s_client -connect "$host:636" 2>&1)
+            if echo "$openssl_output" | grep -q "BEGIN CERTIFICATE" && \
+               echo "$openssl_output" | grep -qE "SSL-Session:|New.*TLS"; then
                 log "✓ LDAPS available but requires custom certificate"
                 echo "ldaps://$host:636|custom_cert|true"
                 return 0
             else
-                log "LDAPS port open but TLS handshake failed"
+                log "LDAPS port open but TLS handshake failed or no certificate available"
             fi
         fi
     else
@@ -1135,6 +1139,7 @@ create_sssd_config() {
     local tls_type="${DETECTED_TLS_TYPE:-unknown}"
     local use_start_tls="false"
     local tls_reqcert="never"
+    local tls_cacert_line=""
     
     # Adjust settings based on TLS type
     if [ "$tls_type" = "starttls" ]; then
@@ -1154,7 +1159,17 @@ create_sssd_config() {
         log "Using strict certificate validation with system CA"
     fi
     
-    sudo tee "$SSSD_CONF" <<EOL
+    # Only add CA cert line if we have a custom certificate
+    if [ "$tls_type" = "custom_cert" ] && [ -f "$CA_CERT" ]; then
+        tls_cacert_line="ldap_tls_cacert = ${CA_CERT}"
+        log "Including custom CA certificate in SSSD config"
+    elif [ "$tls_type" = "system_ca" ] || [ "$tls_type" = "starttls" ]; then
+        # System CA or StartTLS - no custom cert needed
+        log "Using system CA certificates, no custom cert path needed"
+    fi
+    
+    # Build SSSD config with conditional CA cert line
+    cat > /tmp/sssd_conf_$$ <<EOL
 [sssd]
 domains = LDAP
 config_file_version = 2
@@ -1175,7 +1190,14 @@ ldap_network_timeout = 30
 ldap_opt_timeout = 30
 ldap_timeout = 30
 
-ldap_tls_cacert = ${CA_CERT}
+EOL
+
+    # Add CA cert line only if needed
+    if [ -n "$tls_cacert_line" ]; then
+        echo "$tls_cacert_line" >> /tmp/sssd_conf_$$
+    fi
+    
+    cat >> /tmp/sssd_conf_$$ <<EOL
 ldap_tls_reqcert = ${tls_reqcert}
 ldap_id_use_start_tls = ${use_start_tls}
 ldap_schema = rfc2307
@@ -1199,11 +1221,15 @@ pam_pwd_response_timeout = 30
 
 EOL
 
+    sudo mv /tmp/sssd_conf_$$ "$SSSD_CONF"
     sudo chmod 600 "$SSSD_CONF"
     
     log "SSSD configuration created with TLS settings:"
     log "  - ldap_id_use_start_tls: $use_start_tls"
     log "  - ldap_tls_reqcert: $tls_reqcert"
+    if [ -n "$tls_cacert_line" ]; then
+        log "  - ldap_tls_cacert: $CA_CERT"
+    fi
 }
 
 configure_nss() {
@@ -1320,10 +1346,8 @@ setup_tls() {
         system_ca)
             log "✓ TLS enabled using system CA certificates"
             log "   No custom certificate installation needed"
-            # Create a placeholder to satisfy SSSD config
-            echo "# System CA certificates are used" | sudo tee "$CA_CERT" > /dev/null
-            sudo chmod 600 "$CA_CERT"
             export TLS_CONFIGURED="system_ca"
+            # Don't create a placeholder file - SSSD will use system certs
             ;;
             
         custom_cert)
@@ -1347,21 +1371,17 @@ setup_tls() {
             
         starttls)
             log "✓ TLS enabled using StartTLS on port 389"
-            log "   No certificate installation needed for StartTLS"
-            # StartTLS uses system certificates by default
-            echo "# StartTLS uses system CA certificates" | sudo tee "$CA_CERT" > /dev/null
-            sudo chmod 600 "$CA_CERT"
+            log "   StartTLS uses system CA certificates"
             export TLS_CONFIGURED="starttls"
+            # Don't create a placeholder file - StartTLS will use system certs
             ;;
             
         none|*)
             log "⚠️ TLS NOT enabled - using plain LDAP"
             log "   WARNING: Credentials will be transmitted in clear text!"
             log "   This is a security risk and should only be used in trusted networks"
-            # Create empty cert file to avoid SSSD errors
-            echo "# No TLS certificate - plain LDAP" | sudo tee "$CA_CERT" > /dev/null
-            sudo chmod 600 "$CA_CERT"
             export TLS_CONFIGURED="none"
+            # Don't create a placeholder file - no TLS, no cert needed
             ;;
     esac
     
