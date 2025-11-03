@@ -218,6 +218,97 @@ test_ldap_port() {
     fi
 }
 
+# Function to test if LDAPS connection works with system CA store
+test_ldaps_with_system_ca() {
+    local host=$1
+    local port=${2:-636}
+    
+    log "Testing LDAPS connection to $host:$port with system CA store..."
+    
+    # Try to connect with openssl and verify the certificate
+    if echo "Q" | timeout 5 openssl s_client -connect "$host:$port" -CApath /etc/ssl/certs 2>/dev/null | grep -q "Verify return code: 0"; then
+        log "✓ LDAPS connection successful with valid CA-signed certificate"
+        return 0
+    else
+        log "LDAPS connection failed or certificate not trusted by system CA"
+        return 1
+    fi
+}
+
+# Function to test if StartTLS works on LDAP port
+test_starttls() {
+    local host=$1
+    local port=${2:-389}
+    
+    log "Testing StartTLS on $host:$port..."
+    
+    # Test if ldapsearch is available
+    if ! command -v ldapsearch >/dev/null 2>&1; then
+        log "ldapsearch not available, cannot test StartTLS"
+        return 1
+    fi
+    
+    # Try StartTLS with ldapsearch
+    if timeout 5 ldapsearch -H "ldap://$host:$port" -ZZ -x -b "" -s base 2>&1 | grep -q "successfully started TLS"; then
+        log "✓ StartTLS successfully negotiated"
+        return 0
+    else
+        log "StartTLS negotiation failed"
+        return 1
+    fi
+}
+
+# Function to detect TLS capabilities and return best configuration
+detect_ldap_tls_support() {
+    local host=$1
+    local base_port=${2:-0}
+    
+    log "Detecting TLS capabilities for $host..."
+    
+    # Test LDAPS (port 636) first
+    if test_ldap_port "$host" 636; then
+        log "Port 636 is reachable, testing LDAPS..."
+        
+        # Check if system CA works
+        if test_ldaps_with_system_ca "$host" 636; then
+            log "✓ LDAPS works with system CA certificates"
+            echo "ldaps://$host:636|system_ca|true"
+            return 0
+        else
+            # Check if we can get a certificate (self-signed or custom CA)
+            if echo "Q" | timeout 5 openssl s_client -connect "$host:636" 2>/dev/null | grep -q "BEGIN CERTIFICATE"; then
+                log "✓ LDAPS available but requires custom certificate"
+                echo "ldaps://$host:636|custom_cert|true"
+                return 0
+            else
+                log "LDAPS port open but TLS handshake failed"
+            fi
+        fi
+    else
+        log "LDAPS port 636 not reachable"
+    fi
+    
+    # Test StartTLS on port 389
+    if test_ldap_port "$host" 389; then
+        log "Port 389 is reachable, testing StartTLS..."
+        
+        if test_starttls "$host" 389; then
+            log "✓ StartTLS supported on port 389"
+            echo "ldap://$host:389|starttls|true"
+            return 0
+        else
+            log "Port 389 open but StartTLS not supported, will use plain LDAP"
+            echo "ldap://$host:389|none|false"
+            return 0
+        fi
+    else
+        log "LDAP port 389 not reachable"
+    fi
+    
+    log "⚠️ No working LDAP connection found on $host"
+    return 1
+}
+
 # Function to get certificate CN from LDAP server
 get_certificate_cn() {
     local ldap_uri=$1
@@ -462,41 +553,49 @@ discover_ldap_server() {
     discovered_hosts+=("127.0.0.1:636:ldaps")
     discovered_hosts+=("127.0.0.1:389:ldap")
     
-    # Step 4: Test connectivity to discovered hosts
-    log "Testing connectivity to discovered hosts..."
+    # Step 4: Test TLS capabilities for discovered hosts
+    log "Testing TLS capabilities for discovered hosts..."
+    
+    # Get unique hosts (remove duplicates)
+    local unique_hosts=()
+    local seen_hosts=()
     for host_entry in "${discovered_hosts[@]}"; do
         IFS=':' read -r host port protocol <<< "$host_entry"
-        log "Testing $protocol://$host:$port..."
-        
-        if test_ldap_port "$host" "$port"; then
-            # For LDAPS, try to extract certificate CN and use it for hostname validation
-            if [[ "$protocol" == "ldaps" ]]; then
-                local temp_uri="$protocol://$host:$port"
-                local cert_cn=$(get_certificate_cn "$temp_uri")
-                if [ -n "$cert_cn" ]; then
-                    log "Using certificate CN '$cert_cn' for LDAPS URI"
-                    ldap_uri="$protocol://$cert_cn:$port"
-                elif [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
-                    # Fallback to system hostname for localhost if no CN available
-                    ldap_uri="$protocol://$system_hostname:$port"
-                    log "Found local LDAP server, using system hostname: $ldap_uri"
-                else
-                    ldap_uri="$protocol://$host:$port"
-                fi
-            else
-                # For non-TLS LDAP, use discovered host or system hostname for localhost
-                if [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
-                    ldap_uri="$protocol://$system_hostname:$port"
-                    log "Found local LDAP server, using system hostname: $ldap_uri"
-                else
-                    ldap_uri="$protocol://$host:$port"
-                fi
+        local found=false
+        for seen in "${seen_hosts[@]}"; do
+            if [ "$seen" = "$host" ]; then
+                found=true
+                break
             fi
-            log "Successfully connected to: $ldap_uri"
-            echo "$ldap_uri"
+        done
+        if [ "$found" = false ]; then
+            seen_hosts+=("$host")
+            unique_hosts+=("$host")
+        fi
+    done
+    
+    # Test each unique host for TLS capabilities
+    for host in "${unique_hosts[@]}"; do
+        log "Testing TLS capabilities for: $host"
+        
+        # Detect TLS support and get best configuration
+        local tls_result
+        if tls_result=$(detect_ldap_tls_support "$host"); then
+            IFS='|' read -r uri cert_type tls_enabled <<< "$tls_result"
+            
+            # Adjust hostname for localhost
+            if [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
+                uri="${uri//$host/$system_hostname}"
+                log "Adjusted localhost to system hostname: $uri"
+            fi
+            
+            # Export TLS configuration info for later use
+            export DETECTED_TLS_TYPE="$cert_type"
+            export DETECTED_TLS_ENABLED="$tls_enabled"
+            
+            log "✓ Selected LDAP configuration: $uri (TLS: $cert_type)"
+            echo "$uri"
             return 0
-        else
-            log "Failed to connect to: $protocol://$host:$port"
         fi
     done
     
@@ -548,24 +647,80 @@ prompt_for_env_vars() {
         log ""
         log "Please provide the LDAP server information manually."
         log ""
-        read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
+        read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636 or ldap://ldap.example.com:389): " LDAP_URI
         
         # Validate that LDAP_URI is not empty
         while [ -z "$LDAP_URI" ]; do
             log "Error: LDAP Server URI is required."
             read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
         done
+        
+        # Test TLS capabilities for manually entered URI
+        if [[ "$LDAP_URI" =~ ^ldaps?://([^:]+) ]]; then
+            local manual_host="${BASH_REMATCH[1]}"
+            log "Testing TLS capabilities for manually entered server: $manual_host"
+            
+            local tls_result
+            if tls_result=$(detect_ldap_tls_support "$manual_host"); then
+                IFS='|' read -r suggested_uri cert_type tls_enabled <<< "$tls_result"
+                
+                export DETECTED_TLS_TYPE="$cert_type"
+                export DETECTED_TLS_ENABLED="$tls_enabled"
+                
+                log "✓ TLS detection complete:"
+                log "   Suggested URI: $suggested_uri"
+                log "   Certificate type: $cert_type"
+                log "   TLS enabled: $tls_enabled"
+                
+                # Suggest the optimized URI if different
+                if [ "$suggested_uri" != "$LDAP_URI" ]; then
+                    read -p "Use optimized URI '$suggested_uri' instead? (Y/n): " use_optimized
+                    if [[ ! "$use_optimized" =~ ^[Nn]$ ]]; then
+                        LDAP_URI="$suggested_uri"
+                        log "Using optimized URI: $LDAP_URI"
+                    fi
+                fi
+            else
+                log "⚠️ Could not detect TLS capabilities, using URI as provided"
+            fi
+        fi
     else
         log "✅ Auto-discovered LDAP server: $LDAP_URI"
         
-        # Extract and show certificate for security verification
-        PREVIEW_CERT=$(extract_ca_certificate "$LDAP_URI")
+        # Show TLS detection results
+        local tls_type="${DETECTED_TLS_TYPE:-unknown}"
+        local tls_enabled="${DETECTED_TLS_ENABLED:-false}"
         
-        if [ -n "$PREVIEW_CERT" ]; then
-            display_certificate_details "$PREVIEW_CERT" "$LDAP_URI"
-        else
-            log "⚠️  Could not extract certificate from discovered server (non-LDAPS or connection failed)"
-        fi
+        log ""
+        log "📋 TLS Configuration Detected:"
+        log "========================================"
+        case "$tls_type" in
+            system_ca)
+                log "✓ TLS Status: ENABLED (LDAPS)"
+                log "✓ Certificate: Valid CA-signed certificate"
+                log "✓ Security: System certificates will be used"
+                ;;
+            custom_cert)
+                log "✓ TLS Status: ENABLED (LDAPS)"
+                log "⚠️ Certificate: Self-signed or custom CA"
+                log "📥 Action: Certificate will be auto-retrieved"
+                ;;
+            starttls)
+                log "✓ TLS Status: ENABLED (StartTLS)"
+                log "✓ Certificate: System certificates"
+                log "✓ Security: TLS negotiated on port 389"
+                ;;
+            none)
+                log "⚠️ TLS Status: DISABLED"
+                log "⚠️ WARNING: Credentials will be sent in CLEAR TEXT"
+                log "⚠️ Security Risk: Only use in trusted networks"
+                ;;
+            *)
+                log "❓ TLS Status: Unknown"
+                ;;
+        esac
+        log "========================================"
+        log ""
         
         read -p "Use this server? $LDAP_URI (Y/n): " use_discovered
         if [[ "$use_discovered" =~ ^[Nn]$ ]]; then
@@ -577,15 +732,19 @@ prompt_for_env_vars() {
                 read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
             done
             
-            # Extract certificate from the manually entered server
-            log "Extracting certificate from manually entered server: $LDAP_URI"
-            PREVIEW_CERT=$(extract_ca_certificate "$LDAP_URI")
-            
-            if [ -n "$PREVIEW_CERT" ]; then
-                display_certificate_details "$PREVIEW_CERT" "$LDAP_URI"
-            else
-                log "⚠️  Could not extract certificate from manually entered server"
-                log "   Server may be using plain LDAP (non-TLS) or connection failed"
+            # Re-test TLS for the new URI
+            if [[ "$LDAP_URI" =~ ^ldaps?://([^:]+) ]]; then
+                local manual_host="${BASH_REMATCH[1]}"
+                log "Re-testing TLS capabilities for: $manual_host"
+                
+                local tls_result
+                if tls_result=$(detect_ldap_tls_support "$manual_host"); then
+                    IFS='|' read -r suggested_uri cert_type tls_enabled <<< "$tls_result"
+                    export DETECTED_TLS_TYPE="$cert_type"
+                    export DETECTED_TLS_ENABLED="$tls_enabled"
+                    
+                    log "✓ TLS detection complete: $cert_type (TLS: $tls_enabled)"
+                fi
             fi
         fi
     fi
@@ -632,6 +791,32 @@ prompt_for_env_vars() {
 
 # Function to display configuration and confirm with user
 confirm_configuration() {
+    # Determine TLS status for display
+    local tls_status="Unknown"
+    local tls_type="${DETECTED_TLS_TYPE:-unknown}"
+    
+    case "$tls_type" in
+        system_ca)
+            tls_status="ENABLED (CA-signed cert)"
+            ;;
+        custom_cert)
+            tls_status="ENABLED (Custom/Self-signed cert)"
+            ;;
+        starttls)
+            tls_status="ENABLED (StartTLS)"
+            ;;
+        none)
+            tls_status="DISABLED (Plain LDAP - Insecure!)"
+            ;;
+        *)
+            if [[ "$LDAP_URI" =~ ^ldaps:// ]]; then
+                tls_status="ENABLED (LDAPS)"
+            elif [[ "$LDAP_URI" =~ ^ldap:// ]]; then
+                tls_status="DISABLED (Plain LDAP)"
+            fi
+            ;;
+    esac
+    
     log ""
     log "========================================"
     log "LDAP Configuration Summary:"
@@ -639,10 +824,19 @@ confirm_configuration() {
     log "LDAP URI:        $LDAP_URI"
     log "LDAP Base DN:    $LDAP_BASE"
     log "LDAP Admin DN:   $LDAP_ADMIN_DN"
+    log "TLS Status:      $tls_status"
     log "CA Certificate:  $CA_CERT"
     log "SSH Config:      $([[ "$FORCE_SSHD" == "true" ]] && echo "Enabled" || echo "Disabled")"
     log "========================================="
     log ""
+    
+    # Warning for plain LDAP
+    if [ "$tls_type" = "none" ] || [[ "$LDAP_URI" =~ ^ldap:// && "$tls_type" != "starttls" ]]; then
+        log "⚠️  WARNING: TLS is NOT enabled!"
+        log "   Your credentials and data will be transmitted in CLEAR TEXT."
+        log "   This is a SECURITY RISK and should only be used in trusted networks."
+        log ""
+    fi
     
     read -p "Do you want to proceed with this configuration? (y/N): " confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -922,6 +1116,29 @@ create_sssd_config() {
         CA_CERT=$(get_ca_cert_path)
     fi
     
+    # Determine TLS settings based on detected configuration
+    local tls_type="${DETECTED_TLS_TYPE:-unknown}"
+    local use_start_tls="false"
+    local tls_reqcert="never"
+    
+    # Adjust settings based on TLS type
+    if [ "$tls_type" = "starttls" ]; then
+        use_start_tls="true"
+        log "Configuring SSSD for StartTLS"
+    elif [[ "$LDAP_URI" =~ ^ldaps:// ]]; then
+        use_start_tls="false"
+        log "Configuring SSSD for LDAPS"
+    else
+        use_start_tls="false"
+        log "Configuring SSSD for plain LDAP (no TLS)"
+    fi
+    
+    # If using system CA, we can require certificate validation
+    if [ "$tls_type" = "system_ca" ]; then
+        tls_reqcert="demand"
+        log "Using strict certificate validation with system CA"
+    fi
+    
     sudo tee "$SSSD_CONF" <<EOL
 [sssd]
 domains = LDAP
@@ -944,8 +1161,8 @@ ldap_opt_timeout = 30
 ldap_timeout = 30
 
 ldap_tls_cacert = ${CA_CERT}
-ldap_tls_reqcert = never
-ldap_id_use_start_tls = false
+ldap_tls_reqcert = ${tls_reqcert}
+ldap_id_use_start_tls = ${use_start_tls}
 ldap_schema = rfc2307
 
 cache_credentials = true
@@ -968,6 +1185,10 @@ pam_pwd_response_timeout = 30
 EOL
 
     sudo chmod 600 "$SSSD_CONF"
+    
+    log "SSSD configuration created with TLS settings:"
+    log "  - ldap_id_use_start_tls: $use_start_tls"
+    log "  - ldap_tls_reqcert: $tls_reqcert"
 }
 
 configure_nss() {
@@ -1041,27 +1262,102 @@ get_ca_cert_path() {
 
 # Function to set up TLS
 setup_tls() {
-    log "Setting up TLS..."
+    log "Setting up TLS configuration..."
     
     # Set CA certificate path based on distribution
     CA_CERT=$(get_ca_cert_path)
     
     # Create directory if it doesn't exist
     sudo mkdir -p "$(dirname "$CA_CERT")"
-
-    # Extract certificate directly to the target location
-    if [[ "$LDAP_URI" =~ ^ldaps:// ]]; then
-        log "Extracting certificate directly to $CA_CERT..."
-        if ! extract_ca_certificate "$LDAP_URI" | sudo tee "$CA_CERT" > /dev/null; then
-            log "Warning: Could not extract certificate for LDAPS connection"
-            log "You may need to manually install the CA certificate"
-        else
-            sudo chmod 644 "$CA_CERT"
-            update_ca_certificates
+    
+    # Check if we detected TLS type during discovery
+    local cert_type="${DETECTED_TLS_TYPE:-unknown}"
+    local tls_enabled="${DETECTED_TLS_ENABLED:-false}"
+    
+    # If not detected, try to determine from LDAP_URI
+    if [ "$cert_type" = "unknown" ]; then
+        if [[ "$LDAP_URI" =~ ^ldaps:// ]]; then
+            # Parse host from URI
+            local host
+            if [[ "$LDAP_URI" =~ ^ldaps://([^:]+) ]]; then
+                host="${BASH_REMATCH[1]}"
+                
+                # Test if system CA works
+                if test_ldaps_with_system_ca "$host" 636; then
+                    cert_type="system_ca"
+                    tls_enabled="true"
+                    log "✓ Using system CA certificates for LDAPS"
+                else
+                    cert_type="custom_cert"
+                    tls_enabled="true"
+                    log "LDAPS requires custom certificate"
+                fi
+            fi
+        elif [[ "$LDAP_URI" =~ ^ldap:// ]]; then
+            cert_type="none"
+            tls_enabled="false"
+            log "Using plain LDAP (no TLS)"
         fi
-    else
-        log "Non-LDAPS connection, no certificate setup needed"
     fi
+    
+    # Handle certificate based on detected type
+    case "$cert_type" in
+        system_ca)
+            log "✓ TLS enabled using system CA certificates"
+            log "   No custom certificate installation needed"
+            # Create a placeholder to satisfy SSSD config
+            echo "# System CA certificates are used" | sudo tee "$CA_CERT" > /dev/null
+            sudo chmod 600 "$CA_CERT"
+            export TLS_CONFIGURED="system_ca"
+            ;;
+            
+        custom_cert)
+            log "📥 Retrieving custom certificate from LDAP server..."
+            if [[ "$LDAP_URI" =~ ^ldaps:// ]]; then
+                if extract_ca_certificate "$LDAP_URI" | sudo tee "$CA_CERT" > /dev/null; then
+                    log "✓ Custom certificate retrieved and installed"
+                    sudo chmod 600 "$CA_CERT"
+                    update_ca_certificates
+                    export TLS_CONFIGURED="custom_cert"
+                else
+                    log "⚠️ Warning: Could not extract certificate for LDAPS connection"
+                    log "   You may need to manually install the CA certificate"
+                    export TLS_CONFIGURED="failed"
+                fi
+            else
+                log "⚠️ Warning: Certificate required but URI is not LDAPS"
+                export TLS_CONFIGURED="failed"
+            fi
+            ;;
+            
+        starttls)
+            log "✓ TLS enabled using StartTLS on port 389"
+            log "   No certificate installation needed for StartTLS"
+            # StartTLS uses system certificates by default
+            echo "# StartTLS uses system CA certificates" | sudo tee "$CA_CERT" > /dev/null
+            sudo chmod 600 "$CA_CERT"
+            export TLS_CONFIGURED="starttls"
+            ;;
+            
+        none|*)
+            log "⚠️ TLS NOT enabled - using plain LDAP"
+            log "   WARNING: Credentials will be transmitted in clear text!"
+            log "   This is a security risk and should only be used in trusted networks"
+            # Create empty cert file to avoid SSSD errors
+            echo "# No TLS certificate - plain LDAP" | sudo tee "$CA_CERT" > /dev/null
+            sudo chmod 600 "$CA_CERT"
+            export TLS_CONFIGURED="none"
+            ;;
+    esac
+    
+    # Log final TLS configuration
+    log "========================================"
+    log "TLS Configuration Summary:"
+    log "  LDAP URI: $LDAP_URI"
+    log "  TLS Status: $([ "$tls_enabled" = "true" ] && echo "ENABLED" || echo "DISABLED")"
+    log "  Certificate Type: $cert_type"
+    log "  Certificate Path: $CA_CERT"
+    log "========================================"
 }
 
 
