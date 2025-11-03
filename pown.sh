@@ -225,8 +225,22 @@ test_ldaps_with_system_ca() {
     
     log "Testing LDAPS connection to $host:$port with system CA store..."
     
+    # Determine system CA path
+    local ca_path="/etc/ssl/certs"
+    if [ ! -d "$ca_path" ]; then
+        # Try alternative paths for different systems
+        if [ -d "/etc/pki/tls/certs" ]; then
+            ca_path="/etc/pki/tls/certs"
+        elif [ -d "/usr/local/share/certs" ]; then
+            ca_path="/usr/local/share/certs"
+        elif [ -d "/System/Library/OpenSSL" ]; then
+            # macOS
+            ca_path="/System/Library/OpenSSL"
+        fi
+    fi
+    
     # Try to connect with openssl and verify the certificate
-    if echo "Q" | timeout 5 openssl s_client -connect "$host:$port" -CApath /etc/ssl/certs 2>/dev/null | grep -q "Verify return code: 0"; then
+    if echo "Q" | timeout 5 openssl s_client -connect "$host:$port" -CApath "$ca_path" 2>/dev/null | grep -q "Verify return code: 0"; then
         log "✓ LDAPS connection successful with valid CA-signed certificate"
         return 0
     else
@@ -248,8 +262,10 @@ test_starttls() {
         return 1
     fi
     
-    # Try StartTLS with ldapsearch
-    if timeout 5 ldapsearch -H "ldap://$host:$port" -ZZ -x -b "" -s base 2>&1 | grep -q "successfully started TLS"; then
+    # Try StartTLS with ldapsearch (-ZZ requires StartTLS, -x for simple auth, -b "" for root DSE)
+    # If StartTLS works, the command will succeed (exit 0)
+    # If StartTLS fails, ldapsearch will fail and exit with non-zero
+    if timeout 5 ldapsearch -H "ldap://$host:$port" -ZZ -x -b "" -s base >/dev/null 2>&1; then
         log "✓ StartTLS successfully negotiated"
         return 0
     else
@@ -261,7 +277,6 @@ test_starttls() {
 # Function to detect TLS capabilities and return best configuration
 detect_ldap_tls_support() {
     local host=$1
-    local base_port=${2:-0}
     
     log "Detecting TLS capabilities for $host..."
     
