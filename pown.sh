@@ -3,6 +3,11 @@
 # Exit immediately if a command exits with a non-zero status
 set -e #x  #add x for debugging
 
+# Set locale to prevent perl warnings and ensure consistent behavior
+export LC_ALL=C.UTF-8
+export LANG=C.UTF-8
+export LANGUAGE=C.UTF-8
+
 # Error trap to capture failures
 error_exit() {
     local exit_code=$?
@@ -341,14 +346,33 @@ extract_ca_certificate() {
             return 1
         fi
         
-        # Extract the certificate
+        # Extract the certificate with timeout and proper error handling
         local cert_content
-        local extract_ca_command="openssl s_client -connect \"$host:$port\" -showcerts < /dev/null 2>/dev/null | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p'"
+        local extract_ca_command="timeout 10 openssl s_client -connect \"$host:$port\" -showcerts -verify_return_error"
         log "Executing: $extract_ca_command"
         
-        if ! cert_content=$(openssl s_client -connect "$host:$port" -showcerts < /dev/null 2>/dev/null | \
-                           sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p'); then
-            log "Warning: Certificate extraction command failed: $extract_ca_command"
+        # First test if the connection is reachable
+        if ! timeout 5 nc -z "$host" "$port" 2>/dev/null; then
+            log "Warning: Cannot reach $host:$port (connection timeout or refused)"
+            return 1
+        fi
+        
+        # Extract certificate with timeout and proper error capture
+        local openssl_output openssl_exit_code
+        openssl_output=$(timeout 10 openssl s_client -connect "$host:$port" -showcerts < /dev/null 2>&1)
+        openssl_exit_code=$?
+        
+        if [ $openssl_exit_code -ne 0 ]; then
+            log "Warning: OpenSSL connection failed with exit code $openssl_exit_code"
+            log "OpenSSL output: $(echo "$openssl_output" | head -3)"
+            return 1
+        fi
+        
+        cert_content=$(echo "$openssl_output" | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p')
+        
+        if [ -z "$cert_content" ]; then
+            log "Warning: No certificates found in OpenSSL output"
+            log "Raw OpenSSL output (first 500 chars): ${openssl_output:0:500}"
             return 1
         fi
         
@@ -1030,25 +1054,10 @@ configure_sssd_authselect() {
     sudo authselect select sssd --force
 }
 
-# Function to get CA certificate path based on distribution
+# Function to get temporary CA certificate path for extraction
 get_ca_cert_path() {
-    case $PACKAGE_MANAGER in
-        apt)
-            echo "/etc/ssl/certs/ldap-ca-cert.pem"
-            ;;
-        yum|dnf)
-            echo "/etc/pki/tls/certs/ldap-ca-cert.pem"
-            ;;
-        pacman)
-            echo "/etc/ca-certificates/trust-source/anchors/ldap-ca-cert.pem"
-            ;;
-        macos-native)
-            echo "/tmp/ldap-ca-cert.pem"  # Temporary location before adding to keychain
-            ;;
-        *)
-            echo "/etc/ssl/certs/ldap-ca-cert.pem"
-            ;;
-    esac
+    # Always use a temporary location first, then update_ca_certificates will place it correctly
+    echo "/tmp/ldap-ca-cert.pem"
 }
 
 # Function to set up TLS
@@ -1065,11 +1074,29 @@ setup_tls() {
     if [[ "$LDAP_URI" =~ ^ldaps:// ]]; then
         log "Extracting certificate directly to $CA_CERT..."
         if ! extract_ca_certificate "$LDAP_URI" | sudo tee "$CA_CERT" > /dev/null; then
-            log "Warning: Could not extract certificate for LDAPS connection"
-            log "You may need to manually install the CA certificate"
+            log "ERROR: Could not extract certificate for LDAPS connection"
+            log ""
+            log "This can happen for several reasons:"
+            log "  1. The LDAP server is not accessible on the network"
+            log "  2. The server is using a self-signed or internal CA certificate"  
+            log "  3. Firewall is blocking the connection"
+            log "  4. The server requires SNI or specific SSL/TLS configuration"
+            log ""
+            log "Manual certificate installation options:"
+            log "  1. Get the CA certificate from your administrator"
+            log "  2. Use 'openssl s_client -connect HOST:636 -showcerts' to view certificates"
+            log "  3. Try using LDAP (port 389) with StartTLS instead of LDAPS (port 636)"
+            log ""
+            log "The script will continue with LDAP configuration, but SSL/TLS verification may fail."
+            log "You can manually install the certificate later if needed."
+            return 1
         else
             sudo chmod 644 "$CA_CERT"
-            update_ca_certificates
+            if update_ca_certificates; then
+                log "Successfully installed CA certificate to system trust store"
+            else
+                log "Warning: CA certificate extracted but failed to install to system trust store"
+            fi
         fi
     else
         log "Non-LDAPS connection, no certificate setup needed"
@@ -1079,26 +1106,50 @@ setup_tls() {
 
 update_ca_certificates() {
     log "Updating CA certificates..."
+    
+    # Verify the certificate file exists and is valid
+    if [ ! -f "$CA_CERT" ]; then
+        log "Warning: Certificate file $CA_CERT not found, skipping CA update"
+        return 1
+    fi
+    
+    # Verify it's a valid certificate
+    if ! openssl x509 -in "$CA_CERT" -noout 2>/dev/null; then
+        log "Warning: Invalid certificate format in $CA_CERT, skipping CA update"
+        return 1
+    fi
+    
     case $PACKAGE_MANAGER in
         apt)    
             # For Debian/Ubuntu, copy to the ca-certificates directory and update
+            log "Installing certificate to system CA store (Debian/Ubuntu)"
             exec_log sudo cp "$CA_CERT" /usr/local/share/ca-certificates/ldap-ca-cert.crt
             exec_log sudo update-ca-certificates
             ;;
         yum|dnf)    
             # For RHEL/CentOS/Fedora, copy to anchors and update trust
+            log "Installing certificate to system CA store (RHEL/CentOS/Fedora)"
             exec_log sudo cp "$CA_CERT" /etc/pki/ca-trust/source/anchors/ldap-ca-cert.pem
             exec_log sudo update-ca-trust extract
             ;;
         pacman) 
-            # For Arch Linux, the file is already in the right place
+            # For Arch Linux, copy to trust anchors and update
+            log "Installing certificate to system CA store (Arch Linux)"
+            exec_log sudo cp "$CA_CERT" /etc/ca-certificates/trust-source/anchors/ldap-ca-cert.pem
             exec_log sudo update-ca-trust
             ;;
         macos-native)
             # For macOS, add to system keychain
+            log "Installing certificate to system keychain (macOS)"
             exec_log sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$CA_CERT"
             ;;
     esac
+    
+    # Clean up temporary file
+    if [ -f "$CA_CERT" ] && [[ "$CA_CERT" == "/tmp/"* ]]; then
+        rm -f "$CA_CERT"
+        log "Cleaned up temporary certificate file"
+    fi
 }
 
 configure_pam_mkhomedir() {
