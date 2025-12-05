@@ -846,12 +846,9 @@ configure_ssh_authentication() {
     # Define SSH configuration settings
     local ssh_settings=(
         "PasswordAuthentication yes"
-        "PermitRootLogin yes"
         "PubkeyAuthentication yes"
         "UsePAM yes"
         "KbdInteractiveAuthentication yes"
-        "Port 22"
-        "Protocol 2"
     )
 
     # Apply each configuration setting
