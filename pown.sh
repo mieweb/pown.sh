@@ -399,6 +399,26 @@ extract_ca_certificate() {
     fi
 }
 
+# Function to check if domain has LDAP SRV records
+check_domain_has_srv_records() {
+    local domain=$1
+    
+    # Ensure DNS tools are available
+    ensure_dns_tools
+    
+    # Check LDAPS SRV records
+    if [ -n "$(lookup_srv_records "_ldaps._tcp" "$domain")" ]; then
+        return 0
+    fi
+    
+    # Check LDAP SRV records
+    if [ -n "$(lookup_srv_records "_ldap._tcp" "$domain")" ]; then
+        return 0
+    fi
+    
+    return 1
+}
+
 # Function to discover LDAP servers - separates host discovery from port testing
 discover_ldap_server() {
     local domain=$1
@@ -537,6 +557,17 @@ prompt_for_env_vars() {
         fi
     fi
     
+    # Check for SRV records to determine configuration mode
+    if check_domain_has_srv_records "$domain"; then
+        USE_DNS_DISCOVERY="true"
+        log "SRV records found. Will use DNS discovery in SSSD configuration."
+    else
+        USE_DNS_DISCOVERY="false"
+        log "No SRV records found. Will use static URI in SSSD configuration."
+    fi
+    export USE_DNS_DISCOVERY
+    export LDAP_DOMAIN="$domain"
+    
     # Auto-discover LDAP server
     LDAP_URI=$(discover_ldap_server "$domain") || true
     
@@ -555,6 +586,10 @@ prompt_for_env_vars() {
             log "Error: LDAP Server URI is required."
             read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
         done
+        
+        # If manual entry, disable DNS discovery
+        USE_DNS_DISCOVERY="false"
+        export USE_DNS_DISCOVERY
     else
         log "✅ Auto-discovered LDAP server: $LDAP_URI"
         
@@ -576,6 +611,10 @@ prompt_for_env_vars() {
                 log "Error: LDAP Server URI is required."
                 read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
             done
+            
+            # If manual entry, disable DNS discovery
+            USE_DNS_DISCOVERY="false"
+            export USE_DNS_DISCOVERY
             
             # Extract certificate from the manually entered server
             log "Extracting certificate from manually entered server: $LDAP_URI"
@@ -662,6 +701,8 @@ save_env_file() {
 LDAP_URI=$LDAP_URI
 LDAP_BASE=$LDAP_BASE
 LDAP_ADMIN_DN=$LDAP_ADMIN_DN
+LDAP_DOMAIN=$LDAP_DOMAIN
+USE_DNS_DISCOVERY=$USE_DNS_DISCOVERY
 
 # SSH Configuration
 FORCE_SSHD=$FORCE_SSHD
@@ -922,6 +963,13 @@ create_sssd_config() {
         CA_CERT=$(get_ca_cert_path)
     fi
     
+    local ldap_server_config
+    if [ "$USE_DNS_DISCOVERY" == "true" ] && [ -n "$LDAP_DOMAIN" ]; then
+        ldap_server_config="dns_discovery_domain = ${LDAP_DOMAIN}"
+    else
+        ldap_server_config="ldap_uri = ${LDAP_URI}"
+    fi
+    
     sudo tee "$SSSD_CONF" <<EOL
 [sssd]
 domains = LDAP
@@ -932,7 +980,7 @@ services = nss, pam, ssh
 debug_level = 9
 id_provider = ldap
 auth_provider = ldap
-ldap_uri = ${LDAP_URI}
+${ldap_server_config}
 ldap_enforce_password_policy = false
 ldap_search_base = ${LDAP_BASE}
 
