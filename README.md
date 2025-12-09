@@ -6,10 +6,18 @@ This project automates LDAP client setup across various Linux distributions (Deb
 
 * **Interactive Setup**: Automatically prompts for LDAP configuration if no `.env` file exists
 * **Smart Domain Detection**: Auto-generates LDAP Base DN from system hostname  
+* **Intelligent TLS Detection**: Automatically detects and configures optimal TLS settings
+  - Tests LDAPS (port 636) with system CA validation
+  - Tests StartTLS (port 389) support
+  - Falls back to plain LDAP if TLS unavailable
+  - Auto-retrieves certificates only when needed
 * **Cross-distro Support**: Works with `apt`, `yum`, `dnf`, and `pacman` package managers, plus native macOS support
 * **Secure SSH Configuration**: Sets up SSH with secure defaults and PAM integration
 * **SSSD Integration**: Complete SSSD setup for LDAP authentication (Linux) or native Directory Services (macOS)
-* **TLS Certificate Handling**: Automated CA certificate installation and trust setup
+* **Smart Certificate Handling**: 
+  - Uses system CA certificates when valid
+  - Auto-retrieves custom certificates when needed
+  - No manual certificate pasting required
 * **Undo Capability**: Safely remove LDAP configuration and restore original system settings
 * **Global CDN Distribution**: Available via Cloudflare Workers for fast worldwide access
 
@@ -45,13 +53,56 @@ sudo ./pown.sh --undo
 When you run the script **without a `.env` file**, it will:
 
 1. **Auto-detect your domain** from hostname (e.g., `server.example.com` → `dc=example,dc=com`)
-2. **Prompt for LDAP settings**:
-   - LDAP Server URI
+2. **Auto-discover LDAP server** using DNS SRV records and common hostnames
+3. **Intelligent TLS detection**:
+   - Tests LDAPS (port 636) with system CA certificates
+   - Tests StartTLS support on port 389
+   - Validates certificate trust automatically
+   - Falls back to plain LDAP if TLS unavailable (with security warnings)
+4. **Display TLS configuration summary**:
+   - Certificate type (CA-signed, self-signed, or none)
+   - Security level and recommendations
+   - Auto-retrieved certificates when needed
+5. **Prompt for LDAP settings**:
+   - LDAP Server URI (auto-discovered or manual)
    - LDAP Base DN (with smart default)
    - Admin Distinguished Name
-   - CA Certificate path and content
-3. **Show configuration summary** and ask for confirmation
-4. **Create `.env` file** automatically for future runs
+6. **Show configuration summary** and ask for confirmation
+7. **Create `.env` file** automatically for future runs
+
+## TLS Detection & Security
+
+The script automatically detects and configures the most secure TLS option available:
+
+### Detection Priority (Best to Worst)
+1. **LDAPS with Valid CA Certificate** (Port 636)
+   - Most secure option
+   - Uses existing system CA certificates
+   - No manual certificate installation needed
+   
+2. **LDAPS with Custom Certificate** (Port 636)
+   - Secure with custom/self-signed certs
+   - Certificate automatically retrieved from server
+   - Installed to system trust store
+   
+3. **StartTLS** (Port 389)
+   - TLS negotiated on plain LDAP port
+   - Uses system CA certificates
+   - Good fallback option
+   
+4. **Plain LDAP** (Port 389)
+   - **Not recommended** - credentials sent in clear text
+   - Security warnings displayed
+   - Only use in trusted networks
+
+### Example Output
+```
+Testing LDAP server TLS capabilities...
+✓ LDAPS connection successful on port 636
+✓ Server certificate validated with system CA store
+Using LDAPS with existing system certificates
+TLS configuration: ENABLED
+```
 
 ### Manual `.env` Configuration
 
@@ -59,13 +110,11 @@ If you prefer to create the configuration file manually:
 
 ```env
 LDAP_BASE=dc=example,dc=com
-LDAP_URI=ldap://your-ldap-host:389
+LDAP_URI=ldaps://your-ldap-host:636
 LDAP_ADMIN_DN=cn=admin,dc=example,dc=com
-CA_CERT=/etc/ssl/certs/ca-cert.pem
-CA_CERT_CONTENT="-----BEGIN CERTIFICATE-----
-...your certificate content...
------END CERTIFICATE-----"
 ```
+
+Note: TLS detection and certificate handling is now automatic. No need to manually specify CA certificates.
 
 ## Global Distribution
 
