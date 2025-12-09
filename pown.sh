@@ -429,6 +429,7 @@ discover_ldap_server() {
     local domain=$1
     local discovered_hosts=()
     local ldap_uri=""
+    local found_ldaps_srv=false
     
     log "Discovering LDAP server for domain: $domain"
     
@@ -441,6 +442,7 @@ discover_ldap_server() {
     # Try LDAPS SRV records (port 636)
     local srv_records=$(lookup_srv_records "_ldaps._tcp" "$domain")
     if [ -n "$srv_records" ]; then
+        found_ldaps_srv=true
         while IFS= read -r srv_record; do
             if [ -n "$srv_record" ]; then
                 local priority=$(echo "$srv_record" | awk '{print $1}')
@@ -518,6 +520,12 @@ discover_ldap_server() {
                 fi
             fi
             log "Successfully connected to: $ldap_uri"
+            # Export whether LDAPS SRV records were found for SSSD config
+            if [ "$found_ldaps_srv" = true ]; then
+                export HAS_LDAPS_SRV="true"
+            else
+                export HAS_LDAPS_SRV="false"
+            fi
             echo "$ldap_uri"
             return 0
         else
@@ -527,6 +535,7 @@ discover_ldap_server() {
     
     # No working LDAP server found
     log "Could not auto-discover LDAP server for domain: $domain"
+    export HAS_LDAPS_SRV="false"
     echo ""
     return 1
 }
@@ -566,11 +575,18 @@ prompt_for_env_vars() {
     if check_domain_has_srv_records "$domain"; then
         USE_DNS_DISCOVERY="true"
         log "SRV records found. Will use DNS discovery in SSSD configuration."
+        # Check specifically for LDAPS SRV records
+        if [ -n "$(lookup_srv_records "_ldaps._tcp" "$domain")" ]; then
+            HAS_LDAPS_SRV="true"
+        else
+            HAS_LDAPS_SRV="false"
+        fi
     else
         USE_DNS_DISCOVERY="false"
+        HAS_LDAPS_SRV="false"
         log "No SRV records found. Will use static URI in SSSD configuration."
     fi
-    export USE_DNS_DISCOVERY
+    export USE_DNS_DISCOVERY HAS_LDAPS_SRV
     export LDAP_DOMAIN="$domain"
     
     # Auto-discover LDAP server
@@ -708,6 +724,7 @@ LDAP_BASE=$LDAP_BASE
 LDAP_ADMIN_DN=$LDAP_ADMIN_DN
 LDAP_DOMAIN=$LDAP_DOMAIN
 USE_DNS_DISCOVERY=$USE_DNS_DISCOVERY
+HAS_LDAPS_SRV=$HAS_LDAPS_SRV
 
 # SSH Configuration
 FORCE_SSHD=$FORCE_SSHD
@@ -969,8 +986,13 @@ create_sssd_config() {
     fi
     
     local ldap_server_config
+    local ldap_dns_service=""
     if [ "$USE_DNS_DISCOVERY" == "true" ] && [ -n "$LDAP_DOMAIN" ]; then
         ldap_server_config="dns_discovery_domain = ${LDAP_DOMAIN}"
+        # Prefer LDAPS if LDAPS SRV records were found
+        if [ "$HAS_LDAPS_SRV" == "true" ]; then
+            ldap_dns_service="ldap_dns_service_name = ldaps"
+        fi
     else
         ldap_server_config="ldap_uri = ${LDAP_URI}"
     fi
@@ -986,6 +1008,7 @@ debug_level = 9
 id_provider = ldap
 auth_provider = ldap
 ${ldap_server_config}
+${ldap_dns_service}
 ldap_enforce_password_policy = false
 ldap_search_base = ${LDAP_BASE}
 
