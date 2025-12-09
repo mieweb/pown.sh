@@ -242,38 +242,43 @@ get_certificate_cn() {
     fi
     
     # Only try to extract certificate for LDAPS connections
-    if [[ "$ldap_uri" =~ ^ldaps:// ]]; then
+    if [[ ! "$ldap_uri" =~ ^ldaps:// ]]; then
+        log "get_certificate_cn: Not an LDAPS URI"
+        return 1
+    fi
+    
         log "get_certificate_cn: Extracting CN from $host:$port..."
+    
         # Extract the certificate and get CN
         local cert_content
-        if cert_content=$(openssl s_client -connect "$host:$port" -showcerts < /dev/null 2>/dev/null | \
+    if ! cert_content=$(openssl s_client -connect "$host:$port" -showcerts < /dev/null 2>/dev/null | \
                          sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p'); then
-            if [ -n "$cert_content" ]; then
+        log "get_certificate_cn: OpenSSL connection failed"
+        return 1
+    fi
+    
+    if [ -z "$cert_content" ]; then
+        log "get_certificate_cn: No certificate content"
+        return 1
+    fi
+    
                 # Get the first certificate block
                 local ca_cert=$(echo "$cert_content" | sed -n '1,/-----END CERTIFICATE-----/p')
-                if [ -n "$ca_cert" ]; then
+    if [ -z "$ca_cert" ]; then
+        log "get_certificate_cn: No certificate block found"
+        return 1
+    fi
+    
                     # Extract CN from certificate subject
                     local cert_cn=$(echo "$ca_cert" | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*CN *= *\([^,]*\).*/\1/p' | head -1)
-                    if [ -n "$cert_cn" ]; then
+    if [ -z "$cert_cn" ]; then
+        log "get_certificate_cn: CN extraction failed"
+        return 1
+    fi
+    
                         log "get_certificate_cn: Extracted CN: $cert_cn"
                         echo "$cert_cn"
                         return 0
-                    else
-                        log "get_certificate_cn: CN extraction failed"
-                    fi
-                else
-                    log "get_certificate_cn: No certificate block found"
-                fi
-            else
-                log "get_certificate_cn: No certificate content"
-            fi
-        else
-            log "get_certificate_cn: OpenSSL connection failed"
-        fi
-    else
-        log "get_certificate_cn: Not an LDAPS URI"
-    fi
-    return 1
 }
 
 # Function to display certificate details
