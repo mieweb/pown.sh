@@ -120,7 +120,7 @@ get_packages() {
             echo "openssh sssd openldap sudo ca-certificates vim net-tools iputils pam pambase bind"
             ;;
         dnf)
-            echo "openssh-clients openssh-server sssd sssd-ldap sudo openldap-clients ca-certificates vim net-tools iputils authselect bind-utils"
+            echo "openssh-clients openssh-server sssd sssd-ldap sudo openldap-clients ca-certificates vim net-tools iputils authselect bind-utils openssl"
             ;;
         macos-native)
             # macOS has native tools: dsconfigldap, dscl, openssl/LibreSSL, dig, ssh, etc.
