@@ -969,14 +969,7 @@ setup_sssd() {
     fi
     
     exec_log systemctl enable sssd
-    if pidof systemd >/dev/null 2>&1; then
-        exec_log systemctl restart sssd
-    else
-        log "systemd not detected — starting SSSD manually..."
-        pkill sssd 2>/dev/null || true
-        sssd -D &
-        sleep 2
-    fi
+    exec_log systemctl restart sssd
 }
 
 create_sssd_config() {
