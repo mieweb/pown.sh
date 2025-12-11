@@ -1,14 +1,31 @@
 ---
+x-service: &service
+  privileged: true
+  stop_signal: SIGRTMIN+3
+  entrypoint: /sbin/init
+  extra_hosts:
+    - host.docker.internal:host-gateway
+  volumes:
+    - ./pown.sh:/usr/local/bin/pown.sh
+
 services:
   debian:
+    <<: *service
     build:
       dockerfile_inline: |
         FROM debian:latest
-        RUN apt-get update && apt-get upgrade -y systemd-sysv vim
-        STOPSIGNAL SIGRTMIN+3
-        ENTRYPOINT [ "/sbin/init" ]
-    privileged: true
-    extra_hosts:
-      - host.docker.internal:host-gateway
-    volumes:
-      - ./pown.sh:/usr/local/bin/pown.sh
+        RUN apt-get update && apt-get install -y systemd-sysv vim
+      
+  fedora:
+    <<: *service
+    build:
+      dockerfile_inline: |
+        FROM fedora:latest
+        RUN dnf install -y systemd vim
+
+  arch:
+    <<: *service
+    build:
+      dockerfile_inline: |
+        FROM archlinux:latest
+        RUN pacman -Syu --noconfirm systemd vim
