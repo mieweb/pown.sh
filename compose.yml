@@ -1,0 +1,12 @@
+---
+services:
+  debian:
+    build:
+      dockerfile_inline: |
+        FROM debian:latest
+        RUN apt-get update && apt-get upgrade -y systemd-sysv vim
+        STOPSIGNAL SIGRTMIN+3
+        ENTRYPOINT [ "/sbin/init" ]
+    privileged: true
+    extra_hosts:
+      - host.docker.internal:host-gateway
