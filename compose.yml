@@ -10,3 +10,5 @@ services:
     privileged: true
     extra_hosts:
       - host.docker.internal:host-gateway
+    volumes:
+      - ./pown.sh:/usr/local/bin/pown.sh
