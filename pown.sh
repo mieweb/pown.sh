@@ -337,71 +337,73 @@ extract_ca_certificate() {
     fi
     
     # Only try to extract certificate for LDAPS connections
-    if [[ "$ldap_uri" =~ ^ldaps:// ]]; then
-        log "Attempting to extract CA certificate from $host:$port..."
-        
-        # Check if openssl is available
-        if ! command -v openssl >/dev/null 2>&1; then
-            log "Warning: openssl not available, cannot extract certificate automatically"
-            return 1
-        fi
-        
-        # Extract the certificate
-        local cert_content
-        local extract_ca_command="openssl s_client -connect \"$host:$port\" -showcerts < /dev/null 2>/dev/null | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p'"
-        log "Executing: $extract_ca_command"
-        
-        if ! cert_content=$(openssl s_client -connect "$host:$port" -showcerts < /dev/null 2>/dev/null | \
-                           sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p'); then
-            log "Warning: Certificate extraction command failed: $extract_ca_command"
-            return 1
-        fi
-        
-        if [ -n "$cert_content" ]; then
-            log "Raw certificate content extracted (length: ${#cert_content} chars)"
-            # Get the last certificate (usually the CA certificate)
-            local ca_cert
-            ca_cert=$(echo "$cert_content" | awk '/-----BEGIN CERTIFICATE-----/{cert=""} {cert=cert $0 "\n"} /-----END CERTIFICATE-----/{print cert}' | tail -1)
-            
-            log "Processed CA certificate (length: ${#ca_cert} chars)"
-            if [ -n "$ca_cert" ]; then
-                # Extract CN from certificate subject for hostname validation
-                local cert_cn=$(echo "$ca_cert" | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*CN *= *\([^,]*\).*/\1/p' | head -1)
-                if [ -n "$cert_cn" ]; then
-                    log "Certificate CN: $cert_cn"
-                    # Export CN for potential use in LDAP URI construction
-                    export CERT_CN="$cert_cn"
-                fi
-                log "Successfully extracted CA certificate from server"
-                echo "$ca_cert"
-                return 0
-            else
-                log "Warning: awk processing returned empty certificate"
-                log "Using first certificate block instead"
-                ca_cert=$(echo "$cert_content" | sed -n '1,/-----END CERTIFICATE-----/p')
-                if [ -n "$ca_cert" ]; then
-                    # Extract CN from first certificate as well
-                    local cert_cn=$(echo "$ca_cert" | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*CN *= *\([^,]*\).*/\1/p' | head -1)
-                    if [ -n "$cert_cn" ]; then
-                        log "Certificate CN: $cert_cn"
-                        export CERT_CN="$cert_cn"
-                    fi
-                    log "Successfully extracted first certificate from server"
-                    echo "$ca_cert"
-                    return 0
-                fi
-            fi
-        else
-            log "Warning: cert_content is empty after extraction"
-        fi
-        
-        log "Warning: Could not extract certificate from $host:$port"
-        log "Certificate extraction command output: $cert_content"
-        return 1
-    else
+    if [[ "$ldap_uri" =~ ^ldap:// ]]; then
         log "LDAP connection (non-TLS), no certificate extraction needed"
         return 1
     fi
+
+    log "Attempting to extract CA certificate from $host:$port..."
+    
+    # Check if openssl is available
+    if ! command -v openssl >/dev/null 2>&1; then
+        log "Warning: openssl not available, cannot extract certificate automatically"
+        return 1
+    fi
+    
+    # Extract the certificate
+    local cert_content
+    local extract_ca_command="openssl s_client -connect \"$host:$port\" -showcerts < /dev/null 2>/dev/null | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p'"
+    log "Executing: $extract_ca_command"
+    
+    if ! cert_content=$(openssl s_client -connect "$host:$port" -showcerts < /dev/null 2>/dev/null | \
+                        sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p'); then
+        log "Warning: Certificate extraction command failed: $extract_ca_command"
+        return 1
+    fi
+    
+    if [ -z "$cert_content" ]; then
+        log "Warning: cert_content is empty after extraction"
+        return 1
+    fi
+
+    log "Raw certificate content extracted (length: ${#cert_content} chars)"
+
+    # Get the last certificate (usually the CA certificate)
+    local ca_cert
+    ca_cert=$(echo "$cert_content" | awk '/-----BEGIN CERTIFICATE-----/{cert=""} {cert=cert $0 "\n"} /-----END CERTIFICATE-----/{print cert}' | tail -1)
+    
+    log "Processed CA certificate (length: ${#ca_cert} chars)"
+    if [ -n "$ca_cert" ]; then
+        # Extract CN from certificate subject for hostname validation
+        local cert_cn=$(echo "$ca_cert" | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*CN *= *\([^,]*\).*/\1/p' | head -1)
+        if [ -n "$cert_cn" ]; then
+            log "Certificate CN: $cert_cn"
+            # Export CN for potential use in LDAP URI construction
+            export CERT_CN="$cert_cn"
+        fi
+        log "Successfully extracted CA certificate from server"
+        echo "$ca_cert"
+        return 0
+    else
+        log "Warning: awk processing returned empty certificate"
+        log "Using first certificate block instead"
+        ca_cert=$(echo "$cert_content" | sed -n '1,/-----END CERTIFICATE-----/p')
+        if [ -n "$ca_cert" ]; then
+            # Extract CN from first certificate as well
+            local cert_cn=$(echo "$ca_cert" | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*CN *= *\([^,]*\).*/\1/p' | head -1)
+            if [ -n "$cert_cn" ]; then
+                log "Certificate CN: $cert_cn"
+                export CERT_CN="$cert_cn"
+            fi
+            log "Successfully extracted first certificate from server"
+            echo "$ca_cert"
+            return 0
+        fi
+    fi
+    
+    log "Warning: Could not extract certificate from $host:$port"
+    log "Certificate extraction command output: $cert_content"
+    return 1
 }
 
 # Function to check if domain has LDAP SRV records
