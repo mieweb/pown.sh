@@ -567,63 +567,25 @@ prompt_for_env_vars() {
     
     # Auto-discover LDAP server
     LDAP_URI=$(discover_ldap_server "$domain") || true
-    
-    if [ -z "$LDAP_URI" ]; then
-        log ""
-        log "⚠️  ALERT: Could not auto-discover LDAP server for domain: $domain"
-        log "   - No DNS SRV records found (_ldaps._tcp.$domain or _ldap._tcp.$domain)"
-        log "   - No common LDAP hostnames found (ldap.$domain, ad.$domain, etc.)"
-        log ""
-        log "Please provide the LDAP server information manually."
-        log ""
-        read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
-        
-        # Validate that LDAP_URI is not empty
-        while [ -z "$LDAP_URI" ]; do
-            log "Error: LDAP Server URI is required."
-            read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
-        done
-        
-        # If manual entry, disable DNS discovery
-        USE_DNS_DISCOVERY="false"
-        export USE_DNS_DISCOVERY
-    else
+    if [ -n "$LDAP_URI" ]; then
         log "✅ Auto-discovered LDAP server: $LDAP_URI"
-        
-        # Extract and show certificate for security verification
-        PREVIEW_CERT=$(extract_ca_certificate "$LDAP_URI")
-        
-        if [ -n "$PREVIEW_CERT" ]; then
-            display_certificate_details "$PREVIEW_CERT" "$LDAP_URI"
-        else
-            log "⚠️  Could not extract certificate from discovered server (non-LDAPS or connection failed)"
-        fi
-        
         read -p "Use this server? $LDAP_URI (Y/n): " use_discovered
         if [[ "$use_discovered" =~ ^[Nn]$ ]]; then
-            read -p "Please enter LDAP Server URI manually: " LDAP_URI
-            
-            # Validate manual entry
-            while [ -z "$LDAP_URI" ]; do
-                log "Error: LDAP Server URI is required."
-                read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
-            done
-            
-            # If manual entry, disable DNS discovery
-            USE_DNS_DISCOVERY="false"
-            export USE_DNS_DISCOVERY
-            
-            # Extract certificate from the manually entered server
-            log "Extracting certificate from manually entered server: $LDAP_URI"
-            PREVIEW_CERT=$(extract_ca_certificate "$LDAP_URI")
-            
-            if [ -n "$PREVIEW_CERT" ]; then
-                display_certificate_details "$PREVIEW_CERT" "$LDAP_URI"
-            else
-                log "⚠️  Could not extract certificate from manually entered server"
-                log "   Server may be using plain LDAP (non-TLS) or connection failed"
-            fi
+            LDAP_URI=''
         fi
+    fi
+
+    while [ -z "$LDAP_URI" ]; do
+        log "Error: LDAP Server URI is required."
+        read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
+    done
+    
+    # Extract and show certificate for security verification
+    PREVIEW_CERT=$(extract_ca_certificate "$LDAP_URI")
+    if [ -n "$PREVIEW_CERT" ]; then
+        display_certificate_details "$PREVIEW_CERT" "$LDAP_URI"
+    else
+        log "⚠️  Could not extract certificate from discovered server (non-LDAPS or connection failed)"
     fi
     
     # Generate LDAP_BASE from domain
