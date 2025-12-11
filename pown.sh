@@ -431,7 +431,6 @@ discover_ldap_server() {
     local domain=$1
     local discovered_hosts=()
     local ldap_uri=""
-    local found_ldaps_srv=false
     
     log "Discovering LDAP server for domain: $domain"
     
@@ -443,8 +442,10 @@ discover_ldap_server() {
     
     # Try LDAPS SRV records (port 636)
     local srv_records=$(lookup_srv_records "_ldaps._tcp" "$domain")
+    export HAS_LDAPS_SRV=false
     if [ -n "$srv_records" ]; then
-        found_ldaps_srv=true
+        export HAS_LDAPS_SRV=true
+        export USE_DNS_DISCOVERY=true
         while IFS= read -r srv_record; do
             if [ -n "$srv_record" ]; then
                 local priority=$(echo "$srv_record" | awk '{print $1}')
@@ -460,6 +461,7 @@ discover_ldap_server() {
     # Try LDAP SRV records (port 389)
     srv_records=$(lookup_srv_records "_ldap._tcp" "$domain")
     if [ -n "$srv_records" ]; then
+        export USE_DNS_DISCOVERY=true
         while IFS= read -r srv_record; do
             if [ -n "$srv_record" ]; then
                 local priority=$(echo "$srv_record" | awk '{print $1}')
@@ -497,42 +499,30 @@ discover_ldap_server() {
         IFS=':' read -r host port protocol <<< "$host_entry"
         log "Testing $protocol://$host:$port..."
         
-        if test_ldap_port "$host" "$port"; then
-            # For LDAPS, try to extract certificate CN and use it for hostname validation
-            if [[ "$protocol" == "ldaps" ]]; then
-                local temp_uri="$protocol://$host:$port"
-                local cert_cn=$(get_certificate_cn "$temp_uri")
-                if [ -n "$cert_cn" ]; then
-                    log "Using certificate CN '$cert_cn' for LDAPS URI"
-                    ldap_uri="$protocol://$cert_cn:$port"
-                elif [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
-                    # Fallback to system hostname for localhost if no CN available
-                    ldap_uri="$protocol://$system_hostname:$port"
-                    log "Found local LDAP server, using system hostname: $ldap_uri"
-                else
-                    ldap_uri="$protocol://$host:$port"
-                fi
-            else
-                # For non-TLS LDAP, use discovered host or system hostname for localhost
-                if [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
-                    ldap_uri="$protocol://$system_hostname:$port"
-                    log "Found local LDAP server, using system hostname: $ldap_uri"
-                else
-                    ldap_uri="$protocol://$host:$port"
-                fi
-            fi
-            log "Successfully connected to: $ldap_uri"
-            # Export whether LDAPS SRV records were found for SSSD config
-            if [ "$found_ldaps_srv" = true ]; then
-                export HAS_LDAPS_SRV="true"
-            else
-                export HAS_LDAPS_SRV="false"
-            fi
-            echo "$ldap_uri"
-            return 0
-        else
+        if ! test_ldap_port "$host" "$port"; then
             log "Failed to connect to: $protocol://$host:$port"
+            continue
         fi
+
+        # Determine the LDAP URI from certificate CN if LDAPS
+        # get_certificate_cn handles the case when not LDAPS
+        # otherwise use the disovered hostname or localhost's system hostname
+        local temp_uri="$protocol://$host:$port"
+        local cert_cn=$(get_certificate_cn "$temp_uri")
+        if [ -n "$cert_cn" ]; then
+            log "Using certificate CN '$cert_cn' for LDAPS URI"
+            ldap_uri="$protocol://$cert_cn:$port"
+        elif [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
+            # Fallback to system hostname for localhost if no CN available
+            ldap_uri="$protocol://$system_hostname:$port"
+            log "Found local LDAP server, using system hostname: $ldap_uri"
+        else
+            ldap_uri="$protocol://$host:$port"
+        fi
+        log "Successfully connected to: $ldap_uri"
+
+        echo "$ldap_uri"
+        return 0
     done
     
     # No working LDAP server found
@@ -573,22 +563,6 @@ prompt_for_env_vars() {
         fi
     fi
     
-    # Check for SRV records to determine configuration mode
-    if check_domain_has_srv_records "$domain"; then
-        USE_DNS_DISCOVERY="true"
-        log "SRV records found. Will use DNS discovery in SSSD configuration."
-        # Check specifically for LDAPS SRV records
-        if [ -n "$(lookup_srv_records "_ldaps._tcp" "$domain")" ]; then
-            HAS_LDAPS_SRV="true"
-        else
-            HAS_LDAPS_SRV="false"
-        fi
-    else
-        USE_DNS_DISCOVERY="false"
-        HAS_LDAPS_SRV="false"
-        log "No SRV records found. Will use static URI in SSSD configuration."
-    fi
-    export USE_DNS_DISCOVERY HAS_LDAPS_SRV
     export LDAP_DOMAIN="$domain"
     
     # Auto-discover LDAP server
