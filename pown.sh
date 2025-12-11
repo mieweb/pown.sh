@@ -968,8 +968,8 @@ setup_sssd() {
         configure_sssd_authselect
     fi
     
-    exec_log systemctl enable sssd
-    exec_log systemctl restart sssd
+    exec_log systemctl enable sssd sssd-{ssh,nss,pam}.socket
+    exec_log systemctl restart sssd sssd-{ssh,nss,pam}.socket
 }
 
 create_sssd_config() {
@@ -994,7 +994,6 @@ create_sssd_config() {
 [sssd]
 domains = LDAP
 config_file_version = 2
-services = nss, pam, ssh
 
 [domain/LDAP]
 debug_level = 9
