@@ -120,7 +120,7 @@ get_packages() {
             echo "openssh sssd openldap sudo ca-certificates vim net-tools iputils pam pambase bind"
             ;;
         dnf)
-            echo "openssh-clients openssh-server sssd sssd-ldap sudo openldap-clients ca-certificates vim net-tools iputils authselect authconfig bind-utils"
+            echo "openssh-clients openssh-server sssd sssd-ldap sudo openldap-clients ca-certificates vim net-tools iputils authselect bind-utils openssl"
             ;;
         macos-native)
             # macOS has native tools: dsconfigldap, dscl, openssl/LibreSSL, dig, ssh, etc.
@@ -163,16 +163,16 @@ ensure_dns_tools() {
     
     case $package_manager in
         apt)
-            sudo apt-get update && sudo apt-get install -y dnsutils
+            apt-get update && apt-get install -y dnsutils
             ;;
         yum)
-            sudo yum install -y bind-utils
+            yum install -y bind-utils
             ;;
         dnf)
-            sudo dnf install -y bind-utils
+            dnf install -y bind-utils
             ;;
         pacman)
-            sudo pacman -S --noconfirm bind
+            pacman -S --noconfirm bind
             ;;
         macos-native)
             log "DNS tools (dig, nslookup, host) are built into macOS"
@@ -242,38 +242,43 @@ get_certificate_cn() {
     fi
     
     # Only try to extract certificate for LDAPS connections
-    if [[ "$ldap_uri" =~ ^ldaps:// ]]; then
-        log "get_certificate_cn: Extracting CN from $host:$port..."
-        # Extract the certificate and get CN
-        local cert_content
-        if cert_content=$(openssl s_client -connect "$host:$port" -showcerts < /dev/null 2>/dev/null | \
-                         sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p'); then
-            if [ -n "$cert_content" ]; then
-                # Get the first certificate block
-                local ca_cert=$(echo "$cert_content" | sed -n '1,/-----END CERTIFICATE-----/p')
-                if [ -n "$ca_cert" ]; then
-                    # Extract CN from certificate subject
-                    local cert_cn=$(echo "$ca_cert" | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*CN *= *\([^,]*\).*/\1/p' | head -1)
-                    if [ -n "$cert_cn" ]; then
-                        log "get_certificate_cn: Extracted CN: $cert_cn"
-                        echo "$cert_cn"
-                        return 0
-                    else
-                        log "get_certificate_cn: CN extraction failed"
-                    fi
-                else
-                    log "get_certificate_cn: No certificate block found"
-                fi
-            else
-                log "get_certificate_cn: No certificate content"
-            fi
-        else
-            log "get_certificate_cn: OpenSSL connection failed"
-        fi
-    else
+    if [[ ! "$ldap_uri" =~ ^ldaps:// ]]; then
         log "get_certificate_cn: Not an LDAPS URI"
+        return 1
     fi
-    return 1
+    
+    log "get_certificate_cn: Extracting CN from $host:$port..."
+    
+    # Extract the certificate and get CN
+    local cert_content
+    if ! cert_content=$(openssl s_client -connect "$host:$port" -showcerts < /dev/null 2>/dev/null | \
+                       sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p'); then
+        log "get_certificate_cn: OpenSSL connection failed"
+        return 1
+    fi
+    
+    if [ -z "$cert_content" ]; then
+        log "get_certificate_cn: No certificate content"
+        return 1
+    fi
+    
+    # Get the first certificate block
+    local ca_cert=$(echo "$cert_content" | sed -n '1,/-----END CERTIFICATE-----/p')
+    if [ -z "$ca_cert" ]; then
+        log "get_certificate_cn: No certificate block found"
+        return 1
+    fi
+    
+    # Extract CN from certificate subject
+    local cert_cn=$(echo "$ca_cert" | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*CN *= *\([^,]*\).*/\1/p' | head -1)
+    if [ -z "$cert_cn" ]; then
+        log "get_certificate_cn: CN extraction failed"
+        return 1
+    fi
+    
+    log "get_certificate_cn: Extracted CN: $cert_cn"
+    echo "$cert_cn"
+    return 0
 }
 
 # Function to display certificate details
@@ -332,71 +337,93 @@ extract_ca_certificate() {
     fi
     
     # Only try to extract certificate for LDAPS connections
-    if [[ "$ldap_uri" =~ ^ldaps:// ]]; then
-        log "Attempting to extract CA certificate from $host:$port..."
-        
-        # Check if openssl is available
-        if ! command -v openssl >/dev/null 2>&1; then
-            log "Warning: openssl not available, cannot extract certificate automatically"
-            return 1
-        fi
-        
-        # Extract the certificate
-        local cert_content
-        local extract_ca_command="openssl s_client -connect \"$host:$port\" -showcerts < /dev/null 2>/dev/null | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p'"
-        log "Executing: $extract_ca_command"
-        
-        if ! cert_content=$(openssl s_client -connect "$host:$port" -showcerts < /dev/null 2>/dev/null | \
-                           sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p'); then
-            log "Warning: Certificate extraction command failed: $extract_ca_command"
-            return 1
-        fi
-        
-        if [ -n "$cert_content" ]; then
-            log "Raw certificate content extracted (length: ${#cert_content} chars)"
-            # Get the last certificate (usually the CA certificate)
-            local ca_cert
-            ca_cert=$(echo "$cert_content" | awk '/-----BEGIN CERTIFICATE-----/{cert=""} {cert=cert $0 "\n"} /-----END CERTIFICATE-----/{print cert}' | tail -1)
-            
-            log "Processed CA certificate (length: ${#ca_cert} chars)"
-            if [ -n "$ca_cert" ]; then
-                # Extract CN from certificate subject for hostname validation
-                local cert_cn=$(echo "$ca_cert" | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*CN *= *\([^,]*\).*/\1/p' | head -1)
-                if [ -n "$cert_cn" ]; then
-                    log "Certificate CN: $cert_cn"
-                    # Export CN for potential use in LDAP URI construction
-                    export CERT_CN="$cert_cn"
-                fi
-                log "Successfully extracted CA certificate from server"
-                echo "$ca_cert"
-                return 0
-            else
-                log "Warning: awk processing returned empty certificate"
-                log "Using first certificate block instead"
-                ca_cert=$(echo "$cert_content" | sed -n '1,/-----END CERTIFICATE-----/p')
-                if [ -n "$ca_cert" ]; then
-                    # Extract CN from first certificate as well
-                    local cert_cn=$(echo "$ca_cert" | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*CN *= *\([^,]*\).*/\1/p' | head -1)
-                    if [ -n "$cert_cn" ]; then
-                        log "Certificate CN: $cert_cn"
-                        export CERT_CN="$cert_cn"
-                    fi
-                    log "Successfully extracted first certificate from server"
-                    echo "$ca_cert"
-                    return 0
-                fi
-            fi
-        else
-            log "Warning: cert_content is empty after extraction"
-        fi
-        
-        log "Warning: Could not extract certificate from $host:$port"
-        log "Certificate extraction command output: $cert_content"
-        return 1
-    else
+    if [[ "$ldap_uri" =~ ^ldap:// ]]; then
         log "LDAP connection (non-TLS), no certificate extraction needed"
         return 1
     fi
+
+    log "Attempting to extract CA certificate from $host:$port..."
+    
+    # Check if openssl is available
+    if ! command -v openssl >/dev/null 2>&1; then
+        log "Warning: openssl not available, cannot extract certificate automatically"
+        return 1
+    fi
+    
+    # Extract the certificate
+    local cert_content
+    local extract_ca_command="openssl s_client -connect \"$host:$port\" -showcerts < /dev/null 2>/dev/null | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p'"
+    log "Executing: $extract_ca_command"
+    
+    if ! cert_content=$(openssl s_client -connect "$host:$port" -showcerts < /dev/null 2>/dev/null | \
+                        sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p'); then
+        log "Warning: Certificate extraction command failed: $extract_ca_command"
+        return 1
+    fi
+    
+    if [ -z "$cert_content" ]; then
+        log "Warning: cert_content is empty after extraction"
+        return 1
+    fi
+
+    log "Raw certificate content extracted (length: ${#cert_content} chars)"
+
+    # Get the last certificate (usually the CA certificate)
+    local ca_cert
+    ca_cert=$(echo "$cert_content" | awk '/-----BEGIN CERTIFICATE-----/{cert=""} {cert=cert $0 "\n"} /-----END CERTIFICATE-----/{print cert}' | tail -1)
+    
+    log "Processed CA certificate (length: ${#ca_cert} chars)"
+    if [ -n "$ca_cert" ]; then
+        # Extract CN from certificate subject for hostname validation
+        local cert_cn=$(echo "$ca_cert" | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*CN *= *\([^,]*\).*/\1/p' | head -1)
+        if [ -n "$cert_cn" ]; then
+            log "Certificate CN: $cert_cn"
+            # Export CN for potential use in LDAP URI construction
+            export CERT_CN="$cert_cn"
+        fi
+        log "Successfully extracted CA certificate from server"
+        echo "$ca_cert"
+        return 0
+    else
+        log "Warning: awk processing returned empty certificate"
+        log "Using first certificate block instead"
+        ca_cert=$(echo "$cert_content" | sed -n '1,/-----END CERTIFICATE-----/p')
+        if [ -n "$ca_cert" ]; then
+            # Extract CN from first certificate as well
+            local cert_cn=$(echo "$ca_cert" | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*CN *= *\([^,]*\).*/\1/p' | head -1)
+            if [ -n "$cert_cn" ]; then
+                log "Certificate CN: $cert_cn"
+                export CERT_CN="$cert_cn"
+            fi
+            log "Successfully extracted first certificate from server"
+            echo "$ca_cert"
+            return 0
+        fi
+    fi
+    
+    log "Warning: Could not extract certificate from $host:$port"
+    log "Certificate extraction command output: $cert_content"
+    return 1
+}
+
+# Function to check if domain has LDAP SRV records
+check_domain_has_srv_records() {
+    local domain=$1
+    
+    # Ensure DNS tools are available
+    ensure_dns_tools
+    
+    # Check LDAPS SRV records
+    if [ -n "$(lookup_srv_records "_ldaps._tcp" "$domain")" ]; then
+        return 0
+    fi
+    
+    # Check LDAP SRV records
+    if [ -n "$(lookup_srv_records "_ldap._tcp" "$domain")" ]; then
+        return 0
+    fi
+    
+    return 1
 }
 
 # Function to discover LDAP servers - separates host discovery from port testing
@@ -415,7 +442,10 @@ discover_ldap_server() {
     
     # Try LDAPS SRV records (port 636)
     local srv_records=$(lookup_srv_records "_ldaps._tcp" "$domain")
+    export HAS_LDAPS_SRV=false
     if [ -n "$srv_records" ]; then
+        export HAS_LDAPS_SRV=true
+        export USE_DNS_DISCOVERY=true
         while IFS= read -r srv_record; do
             if [ -n "$srv_record" ]; then
                 local priority=$(echo "$srv_record" | awk '{print $1}')
@@ -431,6 +461,7 @@ discover_ldap_server() {
     # Try LDAP SRV records (port 389)
     srv_records=$(lookup_srv_records "_ldap._tcp" "$domain")
     if [ -n "$srv_records" ]; then
+        export USE_DNS_DISCOVERY=true
         while IFS= read -r srv_record; do
             if [ -n "$srv_record" ]; then
                 local priority=$(echo "$srv_record" | awk '{print $1}')
@@ -468,40 +499,35 @@ discover_ldap_server() {
         IFS=':' read -r host port protocol <<< "$host_entry"
         log "Testing $protocol://$host:$port..."
         
-        if test_ldap_port "$host" "$port"; then
-            # For LDAPS, try to extract certificate CN and use it for hostname validation
-            if [[ "$protocol" == "ldaps" ]]; then
-                local temp_uri="$protocol://$host:$port"
-                local cert_cn=$(get_certificate_cn "$temp_uri")
-                if [ -n "$cert_cn" ]; then
-                    log "Using certificate CN '$cert_cn' for LDAPS URI"
-                    ldap_uri="$protocol://$cert_cn:$port"
-                elif [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
-                    # Fallback to system hostname for localhost if no CN available
-                    ldap_uri="$protocol://$system_hostname:$port"
-                    log "Found local LDAP server, using system hostname: $ldap_uri"
-                else
-                    ldap_uri="$protocol://$host:$port"
-                fi
-            else
-                # For non-TLS LDAP, use discovered host or system hostname for localhost
-                if [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
-                    ldap_uri="$protocol://$system_hostname:$port"
-                    log "Found local LDAP server, using system hostname: $ldap_uri"
-                else
-                    ldap_uri="$protocol://$host:$port"
-                fi
-            fi
-            log "Successfully connected to: $ldap_uri"
-            echo "$ldap_uri"
-            return 0
-        else
+        if ! test_ldap_port "$host" "$port"; then
             log "Failed to connect to: $protocol://$host:$port"
+            continue
         fi
+
+        # Determine the LDAP URI from certificate CN if LDAPS
+        # get_certificate_cn handles the case when not LDAPS
+        # otherwise use the disovered hostname or localhost's system hostname
+        local temp_uri="$protocol://$host:$port"
+        local cert_cn=$(get_certificate_cn "$temp_uri")
+        if [ -n "$cert_cn" ]; then
+            log "Using certificate CN '$cert_cn' for LDAPS URI"
+            ldap_uri="$protocol://$cert_cn:$port"
+        elif [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
+            # Fallback to system hostname for localhost if no CN available
+            ldap_uri="$protocol://$system_hostname:$port"
+            log "Found local LDAP server, using system hostname: $ldap_uri"
+        else
+            ldap_uri="$protocol://$host:$port"
+        fi
+        log "Successfully connected to: $ldap_uri"
+
+        echo "$ldap_uri"
+        return 0
     done
     
     # No working LDAP server found
     log "Could not auto-discover LDAP server for domain: $domain"
+    export HAS_LDAPS_SRV="false"
     echo ""
     return 1
 }
@@ -537,57 +563,29 @@ prompt_for_env_vars() {
         fi
     fi
     
+    export LDAP_DOMAIN="$domain"
+    
     # Auto-discover LDAP server
     LDAP_URI=$(discover_ldap_server "$domain") || true
-    
-    if [ -z "$LDAP_URI" ]; then
-        log ""
-        log "⚠️  ALERT: Could not auto-discover LDAP server for domain: $domain"
-        log "   - No DNS SRV records found (_ldaps._tcp.$domain or _ldap._tcp.$domain)"
-        log "   - No common LDAP hostnames found (ldap.$domain, ad.$domain, etc.)"
-        log ""
-        log "Please provide the LDAP server information manually."
-        log ""
-        read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
-        
-        # Validate that LDAP_URI is not empty
-        while [ -z "$LDAP_URI" ]; do
-            log "Error: LDAP Server URI is required."
-            read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
-        done
-    else
+    if [ -n "$LDAP_URI" ]; then
         log "✅ Auto-discovered LDAP server: $LDAP_URI"
-        
-        # Extract and show certificate for security verification
-        PREVIEW_CERT=$(extract_ca_certificate "$LDAP_URI")
-        
-        if [ -n "$PREVIEW_CERT" ]; then
-            display_certificate_details "$PREVIEW_CERT" "$LDAP_URI"
-        else
-            log "⚠️  Could not extract certificate from discovered server (non-LDAPS or connection failed)"
-        fi
-        
         read -p "Use this server? $LDAP_URI (Y/n): " use_discovered
         if [[ "$use_discovered" =~ ^[Nn]$ ]]; then
-            read -p "Please enter LDAP Server URI manually: " LDAP_URI
-            
-            # Validate manual entry
-            while [ -z "$LDAP_URI" ]; do
-                log "Error: LDAP Server URI is required."
-                read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
-            done
-            
-            # Extract certificate from the manually entered server
-            log "Extracting certificate from manually entered server: $LDAP_URI"
-            PREVIEW_CERT=$(extract_ca_certificate "$LDAP_URI")
-            
-            if [ -n "$PREVIEW_CERT" ]; then
-                display_certificate_details "$PREVIEW_CERT" "$LDAP_URI"
-            else
-                log "⚠️  Could not extract certificate from manually entered server"
-                log "   Server may be using plain LDAP (non-TLS) or connection failed"
-            fi
+            LDAP_URI=''
         fi
+    fi
+
+    while [ -z "$LDAP_URI" ]; do
+        log "Error: LDAP Server URI is required."
+        read -p "LDAP Server URI (e.g., ldaps://ldap.example.com:636): " LDAP_URI
+    done
+    
+    # Extract and show certificate for security verification
+    PREVIEW_CERT=$(extract_ca_certificate "$LDAP_URI")
+    if [ -n "$PREVIEW_CERT" ]; then
+        display_certificate_details "$PREVIEW_CERT" "$LDAP_URI"
+    else
+        log "⚠️  Could not extract certificate from discovered server (non-LDAPS or connection failed)"
     fi
     
     # Generate LDAP_BASE from domain
@@ -662,6 +660,9 @@ save_env_file() {
 LDAP_URI=$LDAP_URI
 LDAP_BASE=$LDAP_BASE
 LDAP_ADMIN_DN=$LDAP_ADMIN_DN
+LDAP_DOMAIN=$LDAP_DOMAIN
+USE_DNS_DISCOVERY=$USE_DNS_DISCOVERY
+HAS_LDAPS_SRV=$HAS_LDAPS_SRV
 
 # SSH Configuration
 FORCE_SSHD=$FORCE_SSHD
@@ -715,25 +716,25 @@ install_packages() {
     case $package_manager in
         apt)
             export DEBIAN_FRONTEND=noninteractive
-            sudo apt-get update
-            sudo apt-get install -y $packages
-            sudo rm -rf /var/lib/apt/lists/*
+            apt-get update
+            apt-get install -y $packages
+            rm -rf /var/lib/apt/lists/*
             unset DEBIAN_FRONTEND
             ;;
         yum)
-            sudo yum install -y $packages
+            yum install -y $packages
             ;;
         dnf)
-           sudo dnf install -y $packages
+           dnf install -y $packages
            ;;
         pacman)
             setup_pacman_keyring
-            sudo pacman -Syy --noconfirm
-            printf 'y\n' | sudo pacman -S --needed base-devel
+            pacman -Syy --noconfirm
+            printf 'y\n' | pacman -S --needed base-devel
             for package in $packages; do
-                sudo pacman -S --noconfirm --needed "$package"
+                pacman -S --noconfirm --needed "$package"
             done
-            sudo pacman -Sc --noconfirm
+            pacman -Sc --noconfirm
             ;;
         macos-native)
             # No package installation needed on macOS - all tools are built-in
@@ -744,17 +745,17 @@ install_packages() {
 
 setup_pacman_keyring() {
     log "Setting up pacman keyring..."
-    sudo mkdir -p /etc/pacman.d/gnupg
-    sudo chmod 700 /etc/pacman.d/gnupg
-    sudo pacman-key --init
-    sudo pacman-key --populate archlinux
+    mkdir -p /etc/pacman.d/gnupg
+    chmod 700 /etc/pacman.d/gnupg
+    pacman-key --init
+    pacman-key --populate archlinux
 }
 
 # Function to check if SSH service is enabled
 is_ssh_enabled() {
     if [ "$PACKAGE_MANAGER" = "macos-native" ]; then
         # On macOS, check if SSH is enabled in System Preferences
-        sudo systemsetup -getremotelogin 2>/dev/null | grep -q "On"
+        systemsetup -getremotelogin 2>/dev/null | grep -q "On"
     else
         local service_name="ssh"
         [[ "$PACKAGE_MANAGER" =~ ^(yum|pacman|dnf)$ ]] && service_name="sshd"
@@ -814,7 +815,7 @@ setup_ssh() {
         log "SSH service is enabled. Configuring SSH for LDAP authentication..."
     fi
     
-    sudo mkdir -p /var/run/sshd
+    mkdir -p /var/run/sshd
     
     # Configure SSH
     configure_ssh_authentication
@@ -824,16 +825,16 @@ setup_ssh() {
     if [ "$ssh_enabled" = true ]; then
         if [ "$PACKAGE_MANAGER" = "macos-native" ]; then
             # macOS uses launchctl for service management
-            exec_log sudo launchctl unload /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
-            exec_log sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || log "SSH service restart failed"
+            exec_log launchctl unload /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
+            exec_log launchctl load -w /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || log "SSH service restart failed"
         else
             local service_name="ssh"
             [[ "$PACKAGE_MANAGER" =~ ^(yum|pacman|dnf)$ ]] && service_name="sshd"
             
             if command -v service >/dev/null 2>&1; then
-                exec_log sudo service "$service_name" restart
+                exec_log service "$service_name" restart
             else
-                exec_log sudo /usr/sbin/sshd
+                exec_log /usr/sbin/sshd
             fi
 
         fi
@@ -865,7 +866,7 @@ generate_ssh_keys() {
         local key_file="/etc/ssh/ssh_host_${type}_key"
         if [ ! -f "$key_file" ]; then
             log "Generating $type SSH key..."
-            sudo ssh-keygen -t "$type" -f "$key_file" -N ""
+            ssh-keygen -t "$type" -f "$key_file" -N ""
         fi
     done
 }
@@ -878,9 +879,9 @@ setup_ldap_client() {
     fi
 
     log "Setting up LDAP client..."
-    sudo mkdir -p /etc/ldap
+    mkdir -p /etc/ldap
     
-    sudo tee /etc/ldap/ldap.conf <<EOL
+    tee /etc/ldap/ldap.conf <<EOL
 BASE    $LDAP_BASE
 URI     $LDAP_URI
 BINDDN  $LDAP_ADMIN_DN
@@ -905,15 +906,8 @@ setup_sssd() {
         configure_sssd_authselect
     fi
     
-    exec_log sudo systemctl enable sssd
-    if pidof systemd >/dev/null 2>&1; then
-        exec_log sudo systemctl restart sssd
-    else
-        log "systemd not detected — starting SSSD manually..."
-        sudo pkill sssd 2>/dev/null || true
-        sudo sssd -D &
-        sleep 2
-    fi
+    exec_log systemctl enable sssd sssd-{ssh,nss,pam}.socket
+    exec_log systemctl restart sssd sssd-{ssh,nss,pam}.socket
 }
 
 create_sssd_config() {
@@ -922,17 +916,29 @@ create_sssd_config() {
         CA_CERT=$(get_ca_cert_path)
     fi
     
-    sudo tee "$SSSD_CONF" <<EOL
+    local ldap_server_config
+    local ldap_dns_service=""
+    if [ "$USE_DNS_DISCOVERY" == "true" ] && [ -n "$LDAP_DOMAIN" ]; then
+        ldap_server_config="dns_discovery_domain = ${LDAP_DOMAIN}"
+        # Prefer LDAPS if LDAPS SRV records were found
+        if [ "$HAS_LDAPS_SRV" == "true" ]; then
+            ldap_dns_service="ldap_dns_service_name = ldaps"
+        fi
+    else
+        ldap_server_config="ldap_uri = ${LDAP_URI}"
+    fi
+    
+    tee "$SSSD_CONF" <<EOL
 [sssd]
 domains = LDAP
 config_file_version = 2
-services = nss, pam, ssh
 
 [domain/LDAP]
 debug_level = 9
 id_provider = ldap
 auth_provider = ldap
-ldap_uri = ${LDAP_URI}
+${ldap_server_config}
+${ldap_dns_service}
 ldap_enforce_password_policy = false
 ldap_search_base = ${LDAP_BASE}
 
@@ -967,11 +973,11 @@ pam_pwd_response_timeout = 30
 
 EOL
 
-    sudo chmod 600 "$SSSD_CONF"
+    chmod 600 "$SSSD_CONF"
 }
 
 configure_nss() {
-    sudo tee /etc/nsswitch.conf <<EOL
+    tee /etc/nsswitch.conf <<EOL
 passwd: files sss
 shadow: files sss
 group:  files sss
@@ -983,7 +989,7 @@ configure_arch_pam() {
     log "Configuring PAM for Arch Linux..."
     
     # Configure PAM for SSSD
-    sudo tee /etc/pam.d/system-auth <<EOL
+    tee /etc/pam.d/system-auth <<EOL
 #%PAM-1.0
 auth     sufficient pam_sss.so forward_pass
 auth     required  pam_unix.so try_first_pass nullok
@@ -1004,7 +1010,7 @@ session  required  pam_mkhomedir.so skel=/etc/skel umask=0077
 EOL
 
     # Configure PAM for SSHD
-    sudo tee /etc/pam.d/sshd <<EOL
+    tee /etc/pam.d/sshd <<EOL
 #%PAM-1.0
 auth     include  system-auth
 account  include  system-auth
@@ -1015,7 +1021,7 @@ EOL
 
 
 configure_sssd_authselect() {
-    sudo authselect select sssd --force
+    authselect select sssd --force
 }
 
 # Function to get CA certificate path based on distribution
@@ -1047,16 +1053,16 @@ setup_tls() {
     CA_CERT=$(get_ca_cert_path)
     
     # Create directory if it doesn't exist
-    sudo mkdir -p "$(dirname "$CA_CERT")"
+    mkdir -p "$(dirname "$CA_CERT")"
 
     # Extract certificate directly to the target location
     if [[ "$LDAP_URI" =~ ^ldaps:// ]]; then
         log "Extracting certificate directly to $CA_CERT..."
-        if ! extract_ca_certificate "$LDAP_URI" | sudo tee "$CA_CERT" > /dev/null; then
+        if ! extract_ca_certificate "$LDAP_URI" | tee "$CA_CERT" > /dev/null; then
             log "Warning: Could not extract certificate for LDAPS connection"
             log "You may need to manually install the CA certificate"
         else
-            sudo chmod 644 "$CA_CERT"
+            chmod 644 "$CA_CERT"
             update_ca_certificates
         fi
     else
@@ -1075,22 +1081,22 @@ update_ca_certificates() {
 
             # Only copy if source and destination are different
             if [ "$(realpath "$src")" != "$(realpath "$dst")" ]; then
-                exec_log sudo cp -f "$src" "$dst"
+                exec_log cp -f "$src" "$dst"
             else
                 log "Skipping copy — source and destination are the same file"
             fi
 
-            exec_log sudo update-ca-certificates --fresh
+            exec_log update-ca-certificates --fresh
             ;;
         yum|dnf)
-            exec_log sudo cp "$CA_CERT" /etc/pki/ca-trust/source/anchors/ldap-ca-cert.pem
-            exec_log sudo update-ca-trust extract
+            exec_log cp "$CA_CERT" /etc/pki/ca-trust/source/anchors/ldap-ca-cert.pem
+            exec_log update-ca-trust extract
             ;;
         pacman)
-            exec_log sudo update-ca-trust
+            exec_log update-ca-trust
             ;;
         macos-native)
-            exec_log sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$CA_CERT"
+            exec_log security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$CA_CERT"
             ;;
     esac
 }
@@ -1099,9 +1105,9 @@ configure_pam_mkhomedir() {
     log "Configuring PAM for SSHD to enable pam_mkhomedir..."
     PAM_FILE="/etc/pam.d/sshd"
 
-    if ! sudo grep -q "pam_mkhomedir.so" "$PAM_FILE"; then
+    if ! grep -q "pam_mkhomedir.so" "$PAM_FILE"; then
         log "Adding pam_mkhomedir.so configuration to $PAM_FILE..."
-        echo "session required pam_mkhomedir.so skel=/etc/skel umask=0077" | sudo tee -a "$PAM_FILE"
+        echo "session required pam_mkhomedir.so skel=/etc/skel umask=0077" | tee -a "$PAM_FILE"
     else
         log "pam_mkhomedir.so is already configured in $PAM_FILE. Skipping."
     fi
@@ -1109,8 +1115,8 @@ configure_pam_mkhomedir() {
 
 configure_sudo_access() {
     log "Granting sudo access to LDAP group..."
-    echo '%#9999 ALL=(ALL:ALL) ALL' | sudo tee /etc/sudoers.d/proxmox-sudo
-    sudo chmod 440 /etc/sudoers.d/proxmox-sudo
+    echo '%#9999 ALL=(ALL:ALL) ALL' | tee /etc/sudoers.d/proxmox-sudo
+    chmod 440 /etc/sudoers.d/proxmox-sudo
 }
 
 # Function to set up LDAP on macOS using native Directory Services
@@ -1154,7 +1160,7 @@ setup_macos_ldap() {
     log "  Protocol: $protocol"
     
     # Build dsconfigldap command
-    local dsconfigldap_cmd="sudo dsconfigldap -v -a '$ldap_host' -n '/LDAPv3/$ldap_host'"
+    local dsconfigldap_cmd="dsconfigldap -v -a '$ldap_host' -n '/LDAPv3/$ldap_host'"
     
     # Add SSL option for LDAPS
     if [ "$protocol" = "ldaps" ]; then
@@ -1167,7 +1173,7 @@ setup_macos_ldap() {
         
         # Set search base
         log "Setting LDAP search base to: $LDAP_BASE"
-        exec_log sudo dscl localhost -create "/LDAPv3/$ldap_host" "SearchBase" "$LDAP_BASE"
+        exec_log dscl localhost -create "/LDAPv3/$ldap_host" "SearchBase" "$LDAP_BASE"
         
         log "LDAP directory service configured successfully"
         log "You can manage this configuration using:"
@@ -1190,33 +1196,33 @@ setup_macos_ldap() {
 # Function to create backups before making changes
 create_backups() {
     log "Creating backups of original configuration files to $BACKUP_DIR ..."
-    sudo mkdir -p "$BACKUP_DIR"
+    mkdir -p "$BACKUP_DIR"
     
     # Backup SSH configuration
     if [ -f "$SSH_CONF" ]; then
-        sudo cp "$SSH_CONF" "$BACKUP_DIR/sshd_config.backup"
+        cp "$SSH_CONF" "$BACKUP_DIR/sshd_config.backup"
         log "Backed up SSH configuration"
     fi
     
     # Backup PAM files
     if [ -f "$PAM_SSHD" ]; then
-        sudo cp "$PAM_SSHD" "$BACKUP_DIR/pam_sshd.backup"
+        cp "$PAM_SSHD" "$BACKUP_DIR/pam_sshd.backup"
         log "Backed up PAM SSHD configuration"
     fi
     
     if [ -f "$PAM_SYSTEM_AUTH" ]; then
-        sudo cp "$PAM_SYSTEM_AUTH" "$BACKUP_DIR/pam_system_auth.backup"
+        cp "$PAM_SYSTEM_AUTH" "$BACKUP_DIR/pam_system_auth.backup"
         log "Backed up PAM system-auth configuration"
     fi
     
     # Backup NSS configuration
     if [ -f "/etc/nsswitch.conf" ]; then
-        sudo cp "/etc/nsswitch.conf" "$BACKUP_DIR/nsswitch.conf.backup"
+        cp "/etc/nsswitch.conf" "$BACKUP_DIR/nsswitch.conf.backup"
         log "Backed up NSS configuration"
     fi
     
     # Create undo info file
-    sudo tee "$BACKUP_DIR/undo_info.txt" > /dev/null <<EOF
+    tee "$BACKUP_DIR/undo_info.txt" > /dev/null <<EOF
 # LDAP Configuration Undo Information
 # Created: $(date)
 LDAP_URI=${LDAP_URI:-}
@@ -1262,7 +1268,7 @@ undo_ldap_setup() {
     
     # Remove environment file
     if [ -f "$ENV_FILE" ]; then
-        exec_log sudo rm -f "$ENV_FILE"
+        exec_log rm -f "$ENV_FILE"
         log "Removed LDAP environment configuration"
     fi
     
@@ -1280,7 +1286,7 @@ undo_macos_ldap() {
             # Remove LDAP directory configuration
             if dscl localhost -list /LDAPv3 | grep -q "$ldap_host"; then
                 log "Removing LDAP directory: /LDAPv3/$ldap_host"
-                exec_log sudo dscl localhost -delete "/LDAPv3/$ldap_host" 2>/dev/null || log "LDAP directory already removed"
+                exec_log dscl localhost -delete "/LDAPv3/$ldap_host" 2>/dev/null || log "LDAP directory already removed"
             fi
         fi
     fi
@@ -1289,10 +1295,10 @@ undo_macos_ldap() {
     if [ -n "$CA_CERT" ] && [ -f "$CA_CERT" ]; then
         local cert_name=$(openssl x509 -noout -subject -in "$CA_CERT" 2>/dev/null | sed -n 's/.*CN *= *\([^,]*\).*/\1/p')
         if [ -n "$cert_name" ]; then
-            exec_log sudo security delete-certificate -c "$cert_name" /Library/Keychains/System.keychain 2>/dev/null || log "Certificate not found in keychain"
+            exec_log security delete-certificate -c "$cert_name" /Library/Keychains/System.keychain 2>/dev/null || log "Certificate not found in keychain"
             log "Removed certificate for $cert_name from keychain"
         fi
-        exec_log sudo rm -f "$CA_CERT"
+        exec_log rm -f "$CA_CERT"
     fi    
 }
 
@@ -1303,50 +1309,50 @@ undo_linux_ldap() {
     
     # Stop and disable SSSD service
     if systemctl is-active --quiet sssd 2>/dev/null; then
-        exec_log sudo systemctl stop sssd
+        exec_log systemctl stop sssd
         log "Stopped SSSD service"
     fi
     
     if systemctl is-enabled --quiet sssd 2>/dev/null; then
-        exec_log sudo systemctl disable sssd
+        exec_log systemctl disable sssd
         log "Disabled SSSD service"
     fi
     
     # Remove SSSD configuration
     if [ -f "$SSSD_CONF" ]; then
-        exec_log sudo rm -f "$SSSD_CONF"
+        exec_log rm -f "$SSSD_CONF"
         log "Removed SSSD configuration"
     fi
     
     # Remove LDAP client configuration
     if [ -f "/etc/ldap/ldap.conf" ]; then
-        exec_log sudo rm -f "/etc/ldap/ldap.conf"
+        exec_log rm -f "/etc/ldap/ldap.conf"
         log "Removed LDAP client configuration"
     fi
     
     # Remove CA certificate
     if [ -n "$CA_CERT" ] && [ -f "$CA_CERT" ]; then
-        exec_log sudo rm -f "$CA_CERT"
+        exec_log rm -f "$CA_CERT"
         log "Removed LDAP CA certificate"
         
         # Update CA certificates
         case $package_manager in
             apt)
-                exec_log sudo rm -f /usr/local/share/ca-certificates/ldap-ca-cert.crt
-                exec_log sudo update-ca-certificates --fresh
+                exec_log rm -f /usr/local/share/ca-certificates/ldap-ca-cert.crt
+                exec_log update-ca-certificates --fresh
                 ;;
             yum|dnf)
-                exec_log sudo rm -f /etc/pki/ca-trust/source/anchors/ldap-ca-cert.pem
-                exec_log sudo update-ca-trust extract
+                exec_log rm -f /etc/pki/ca-trust/source/anchors/ldap-ca-cert.pem
+                exec_log update-ca-trust extract
                 ;;
             pacman)
-                sudo update-ca-trust
+                update-ca-trust
                 ;;
         esac
     fi
     
     # Clear SSSD cache
-    exec_log sudo rm -rf /var/lib/sss/db/* 2>/dev/null || true
+    exec_log rm -rf /var/lib/sss/db/* 2>/dev/null || true
     
     log "Linux LDAP configuration removed"
 }
@@ -1355,41 +1361,41 @@ undo_linux_ldap() {
 restore_config_files() {
     # Restore SSH configuration
     if [ -f "$BACKUP_DIR/sshd_config.backup" ]; then
-        exec_log sudo cp "$BACKUP_DIR/sshd_config.backup" "$SSH_CONF"
+        exec_log cp "$BACKUP_DIR/sshd_config.backup" "$SSH_CONF"
         log "Restored SSH configuration"
         
         # Restart SSH service
         local package_manager=$(detect_package_manager)
         if [ "$package_manager" = "macos-native" ]; then
-            exec_log sudo launchctl unload /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
-            exec_log sudo launchctl load /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
+            exec_log launchctl unload /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
+            exec_log launchctl load /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
         else
             local service_name="ssh"
             [[ "$package_manager" =~ ^(yum|pacman|dnf)$ ]] && service_name="sshd"
-            exec_log sudo systemctl restart "$service_name" 2>/dev/null || log "Could not restart SSH service"
+            exec_log systemctl restart "$service_name" 2>/dev/null || log "Could not restart SSH service"
         fi
     fi
     
     # Restore PAM configurations
     if [ -f "$BACKUP_DIR/pam_sshd.backup" ]; then
-        sudo cp "$BACKUP_DIR/pam_sshd.backup" "$PAM_SSHD"
+        cp "$BACKUP_DIR/pam_sshd.backup" "$PAM_SSHD"
         log "Restored PAM SSHD configuration"
     fi
     
     if [ -f "$BACKUP_DIR/pam_system_auth.backup" ]; then
-        sudo cp "$BACKUP_DIR/pam_system_auth.backup" "$PAM_SYSTEM_AUTH"
+        cp "$BACKUP_DIR/pam_system_auth.backup" "$PAM_SYSTEM_AUTH"
         log "Restored PAM system-auth configuration"
     fi
     
     # Restore NSS configuration
     if [ -f "$BACKUP_DIR/nsswitch.conf.backup" ]; then
-        sudo cp "$BACKUP_DIR/nsswitch.conf.backup" "/etc/nsswitch.conf"
+        cp "$BACKUP_DIR/nsswitch.conf.backup" "/etc/nsswitch.conf"
         log "Restored NSS configuration"
     fi
     
     # Remove sudo access file
     if [ -f "/etc/sudoers.d/proxmox-sudo" ]; then
-        exec_log sudo rm -f "/etc/sudoers.d/proxmox-sudo"
+        exec_log rm -f "/etc/sudoers.d/proxmox-sudo"
         log "Removed LDAP sudo access configuration"
     fi
 }
@@ -1443,11 +1449,11 @@ main() {
     
     # Additional setup for specific distributions
     if [ "$PACKAGE_MANAGER" = "pacman" ]; then
-        exec_log sudo systemctl enable --now sssd
-        exec_log sudo systemctl enable --now sshd
-        exec_log sudo sss_cache -E
-        exec_log sudo rm -rf /var/lib/sss/db/*
-        exec_log sudo systemctl restart sssd
+        exec_log systemctl enable --now sssd
+        exec_log systemctl enable --now sshd
+        exec_log sss_cache -E
+        exec_log rm -rf /var/lib/sss/db/*
+        exec_log systemctl restart sssd
     elif [ "$PACKAGE_MANAGER" = "macos-native" ]; then
         setup_macos_ldap
         log "macOS setup complete. LDAP directory service configured."
