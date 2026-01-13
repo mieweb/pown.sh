@@ -106,6 +106,139 @@ readonly PAM_SYSTEM_AUTH="/etc/pam.d/system-auth"
 # Load environment variables (after ENV_FILE is defined)
 [ -f "$ENV_FILE" ] && export $(grep -v '^#' "$ENV_FILE" | xargs)
 
+# Detect if running in a container or without systemd
+is_container() {
+    # Check for Docker
+    [ -f /.dockerenv ] && return 0
+    
+    # Check for container environment variable
+    [ -n "${container:-}" ] && return 0
+    
+    # Check cgroup for docker/lxc/podman
+    if [ -f /proc/1/cgroup ]; then
+        grep -qE 'docker|lxc|kubepods|libpod' /proc/1/cgroup 2>/dev/null && return 0
+    fi
+    
+    # Check if PID 1 is not systemd/init
+    if [ -f /proc/1/comm ]; then
+        local init_proc=$(cat /proc/1/comm 2>/dev/null)
+        [[ "$init_proc" != "systemd" && "$init_proc" != "init" ]] && return 0
+    fi
+    
+    return 1
+}
+
+has_systemd() {
+    # Check if systemd is actually running as PID 1 (not just if systemctl exists)
+    if [ ! -d /run/systemd/system ]; then
+        return 1
+    fi
+    # Also verify systemctl can communicate with systemd
+    command -v systemctl >/dev/null 2>&1 && systemctl --version >/dev/null 2>&1
+}
+
+# Service management wrapper functions
+service_enable() {
+    local service=$1
+    if has_systemd; then
+        exec_log systemctl enable "$service"
+    else
+        log "[container] Skipping enable for $service (no systemd)"
+    fi
+}
+
+service_disable() {
+    local service=$1
+    if has_systemd; then
+        exec_log systemctl disable "$service"
+    else
+        log "[container] Skipping disable for $service (no systemd)"
+    fi
+}
+
+service_start() {
+    local service=$1
+    if has_systemd; then
+        exec_log systemctl start "$service"
+    else
+        # Try direct daemon start for common services
+        case "$service" in
+            sssd*)
+                if command -v sssd >/dev/null 2>&1; then
+                    exec_log sssd -D 2>/dev/null || exec_log sssd
+                fi
+                ;;
+            ssh|sshd)
+                exec_log /usr/sbin/sshd
+                ;;
+            *)
+                log "[container] Cannot start $service without systemd"
+                ;;
+        esac
+    fi
+}
+
+service_stop() {
+    local service=$1
+    if has_systemd; then
+        exec_log systemctl stop "$service"
+    else
+        # Try to stop via pkill/killall for common services
+        case "$service" in
+            sssd*)
+                pkill -x sssd 2>/dev/null || true
+                ;;
+            ssh|sshd)
+                pkill -x sshd 2>/dev/null || true
+                ;;
+            *)
+                log "[container] Cannot stop $service without systemd"
+                ;;
+        esac
+    fi
+}
+
+service_restart() {
+    local service=$1
+    if has_systemd; then
+        exec_log systemctl restart "$service"
+    else
+        service_stop "$service"
+        sleep 1
+        service_start "$service"
+    fi
+}
+
+service_is_enabled() {
+    local service=$1
+    if has_systemd; then
+        systemctl is-enabled "$service" >/dev/null 2>&1
+    else
+        # In containers, assume services should be configured
+        return 0
+    fi
+}
+
+service_is_active() {
+    local service=$1
+    if has_systemd; then
+        systemctl is-active --quiet "$service" 2>/dev/null
+    else
+        # Check if process is running
+        case "$service" in
+            sssd*)
+                pgrep -x sssd >/dev/null 2>&1
+                ;;
+            ssh|sshd)
+                pgrep -x sshd >/dev/null 2>&1
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    fi
+}
+
 # Function to get packages for package manager
 get_packages() {
     local pm=$1
@@ -760,7 +893,7 @@ is_ssh_enabled() {
         local service_name="ssh"
         [[ "$PACKAGE_MANAGER" =~ ^(yum|pacman|dnf)$ ]] && service_name="sshd"
         
-        systemctl is-enabled "$service_name" >/dev/null 2>&1
+        service_is_enabled "$service_name"
     fi
 }
 
@@ -831,12 +964,7 @@ setup_ssh() {
             local service_name="ssh"
             [[ "$PACKAGE_MANAGER" =~ ^(yum|pacman|dnf)$ ]] && service_name="sshd"
             
-            if command -v service >/dev/null 2>&1; then
-                exec_log service "$service_name" restart
-            else
-                exec_log /usr/sbin/sshd
-            fi
-
+            service_restart "$service_name"
         fi
     else
         log "SSH service is disabled - configuration applied but service not restarted."
@@ -904,10 +1032,17 @@ setup_sssd() {
         configure_arch_pam
     elif [ "$PACKAGE_MANAGER" = "yum" ] || [ "$PACKAGE_MANAGER" = "dnf" ]; then
         configure_sssd_authselect
+    elif [ "$PACKAGE_MANAGER" = "apt" ]; then
+        configure_debian_pam
     fi
     
-    exec_log systemctl enable sssd sssd-{ssh,nss,pam}.socket
-    exec_log systemctl restart sssd sssd-{ssh,nss,pam}.socket
+    if has_systemd; then
+        exec_log systemctl enable sssd sssd-{ssh,nss,pam}.socket
+        exec_log systemctl restart sssd sssd-{ssh,nss,pam}.socket
+    else
+        log "[container] Starting SSSD directly (no systemd)..."
+        service_start sssd
+    fi
 }
 
 create_sssd_config() {
@@ -930,6 +1065,7 @@ create_sssd_config() {
     
     tee "$SSSD_CONF" <<EOL
 [sssd]
+services = nss, pam
 domains = LDAP
 config_file_version = 2
 
@@ -1019,6 +1155,53 @@ session  include  system-auth
 EOL
 }
 
+configure_debian_pam() {
+    log "Configuring PAM for Debian/Ubuntu..."
+    
+    # Configure common-auth for SSSD
+    tee /etc/pam.d/common-auth <<EOL
+#%PAM-1.0
+# Primary authentication via SSSD
+auth    [success=2 default=ignore]      pam_sss.so forward_pass
+auth    [success=1 default=ignore]      pam_unix.so nullok try_first_pass
+auth    requisite                       pam_deny.so
+auth    required                        pam_permit.so
+EOL
+
+    # Configure common-account for SSSD
+    tee /etc/pam.d/common-account <<EOL
+#%PAM-1.0
+account [success=2 new_authtok_reqd=done default=ignore]    pam_sss.so
+account [success=1 new_authtok_reqd=done default=ignore]    pam_unix.so
+account requisite                                           pam_deny.so
+account required                                            pam_permit.so
+EOL
+
+    # Configure common-password for SSSD
+    tee /etc/pam.d/common-password <<EOL
+#%PAM-1.0
+password    [success=2 default=ignore]      pam_sss.so use_authtok
+password    [success=1 default=ignore]      pam_unix.so obscure sha512
+password    requisite                       pam_deny.so
+password    required                        pam_permit.so
+EOL
+
+    # Configure common-session for SSSD with mkhomedir
+    tee /etc/pam.d/common-session <<EOL
+#%PAM-1.0
+session required    pam_unix.so
+session optional    pam_sss.so
+session required    pam_mkhomedir.so skel=/etc/skel umask=0077
+EOL
+
+    # Configure common-session-noninteractive
+    tee /etc/pam.d/common-session-noninteractive <<EOL
+#%PAM-1.0
+session required    pam_unix.so
+session optional    pam_sss.so
+EOL
+}
+
 
 configure_sssd_authselect() {
     authselect select sssd --force
@@ -1058,12 +1241,20 @@ setup_tls() {
     # Extract certificate directly to the target location
     if [[ "$LDAP_URI" =~ ^ldaps:// ]]; then
         log "Extracting certificate directly to $CA_CERT..."
-        if ! extract_ca_certificate "$LDAP_URI" | tee "$CA_CERT" > /dev/null; then
-            log "Warning: Could not extract certificate for LDAPS connection"
-            log "You may need to manually install the CA certificate"
-        else
+        
+        # Capture certificate content first, then verify it's not empty
+        local cert_content
+        cert_content=$(extract_ca_certificate "$LDAP_URI")
+        
+        if [ -n "$cert_content" ] && echo "$cert_content" | grep -q "BEGIN CERTIFICATE"; then
+            echo "$cert_content" > "$CA_CERT"
             chmod 644 "$CA_CERT"
+            log "Successfully saved CA certificate to $CA_CERT"
             update_ca_certificates
+        else
+            log "Warning: Could not extract certificate for LDAPS connection"
+            log "Certificate content was empty or invalid"
+            log "You may need to manually install the CA certificate"
         fi
     else
         log "Non-LDAPS connection, no certificate setup needed"
@@ -1215,6 +1406,14 @@ create_backups() {
         log "Backed up PAM system-auth configuration"
     fi
     
+    # Backup Debian/Ubuntu common-* PAM files
+    for pam_file in common-auth common-account common-password common-session common-session-noninteractive; do
+        if [ -f "/etc/pam.d/$pam_file" ]; then
+            cp "/etc/pam.d/$pam_file" "$BACKUP_DIR/pam_${pam_file}.backup"
+            log "Backed up PAM $pam_file configuration"
+        fi
+    done
+    
     # Backup NSS configuration
     if [ -f "/etc/nsswitch.conf" ]; then
         cp "/etc/nsswitch.conf" "$BACKUP_DIR/nsswitch.conf.backup"
@@ -1308,13 +1507,13 @@ undo_linux_ldap() {
     log "Undoing Linux LDAP configuration for $package_manager..."
     
     # Stop and disable SSSD service
-    if systemctl is-active --quiet sssd 2>/dev/null; then
-        exec_log systemctl stop sssd
+    if service_is_active sssd; then
+        service_stop sssd
         log "Stopped SSSD service"
     fi
     
-    if systemctl is-enabled --quiet sssd 2>/dev/null; then
-        exec_log systemctl disable sssd
+    if has_systemd && service_is_enabled sssd; then
+        service_disable sssd
         log "Disabled SSSD service"
     fi
     
@@ -1372,7 +1571,7 @@ restore_config_files() {
         else
             local service_name="ssh"
             [[ "$package_manager" =~ ^(yum|pacman|dnf)$ ]] && service_name="sshd"
-            exec_log systemctl restart "$service_name" 2>/dev/null || log "Could not restart SSH service"
+            service_restart "$service_name" 2>/dev/null || log "Could not restart SSH service"
         fi
     fi
     
@@ -1386,6 +1585,14 @@ restore_config_files() {
         cp "$BACKUP_DIR/pam_system_auth.backup" "$PAM_SYSTEM_AUTH"
         log "Restored PAM system-auth configuration"
     fi
+    
+    # Restore Debian/Ubuntu common-* PAM files
+    for pam_file in common-auth common-account common-password common-session common-session-noninteractive; do
+        if [ -f "$BACKUP_DIR/pam_${pam_file}.backup" ]; then
+            cp "$BACKUP_DIR/pam_${pam_file}.backup" "/etc/pam.d/$pam_file"
+            log "Restored PAM $pam_file configuration"
+        fi
+    done
     
     # Restore NSS configuration
     if [ -f "$BACKUP_DIR/nsswitch.conf.backup" ]; then
@@ -1433,6 +1640,12 @@ main() {
     log "Detected package manager: $PACKAGE_MANAGER"
     log "Detected OS version: $OS_VERSION"
     
+    if is_container; then
+        log "⚠️  Container environment detected - using direct service management (no systemd)"
+    elif ! has_systemd; then
+        log "⚠️  No systemd detected - using alternative service management"
+    fi
+    
     # Create backups before making changes
     create_backups
     
@@ -1449,11 +1662,16 @@ main() {
     
     # Additional setup for specific distributions
     if [ "$PACKAGE_MANAGER" = "pacman" ]; then
-        exec_log systemctl enable --now sssd
-        exec_log systemctl enable --now sshd
+        if has_systemd; then
+            exec_log systemctl enable --now sssd
+            exec_log systemctl enable --now sshd
+        else
+            service_start sssd
+            service_start sshd
+        fi
         exec_log sss_cache -E
         exec_log rm -rf /var/lib/sss/db/*
-        exec_log systemctl restart sssd
+        service_restart sssd
     elif [ "$PACKAGE_MANAGER" = "macos-native" ]; then
         setup_macos_ldap
         log "macOS setup complete. LDAP directory service configured."
