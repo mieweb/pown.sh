@@ -904,6 +904,8 @@ setup_sssd() {
         configure_arch_pam
     elif [ "$PACKAGE_MANAGER" = "yum" ] || [ "$PACKAGE_MANAGER" = "dnf" ]; then
         configure_sssd_authselect
+    elif [ "$PACKAGE_MANAGER" = "apt" ]; then
+        configure_debian_pam
     fi
     
     exec_log systemctl enable sssd sssd-{ssh,nss,pam}.socket
@@ -1019,6 +1021,11 @@ session  include  system-auth
 EOL
 }
 
+
+configure_debian_pam() {
+    log "Configuring PAM for Debian/Ubuntu..."
+    exec_log pam-auth-update --enable mkhomedir sss --force
+}
 
 configure_sssd_authselect() {
     authselect select sssd --force
