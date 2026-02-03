@@ -944,12 +944,12 @@ ${ldap_dns_service}
 ldap_enforce_password_policy = false
 ldap_search_base = ${LDAP_BASE}
 
-ldap_connection_expire_timeout = 30
+ldap_connection_expire_timeout = 60
 ldap_connection_expire_offset = 0
 ldap_account_expire_policy = ad
-ldap_network_timeout = 30
-ldap_opt_timeout = 30
-ldap_timeout = 30
+ldap_network_timeout = 60
+ldap_opt_timeout = 60
+ldap_timeout = 60
 
 ldap_tls_cacert = ${CA_CERT}
 ldap_tls_reqcert = never
